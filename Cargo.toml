@@ -1,0 +1,68 @@
+[package]
+name = "duocast-ctl"
+version = "0.1.0"
+edition = "2021"
+description = "OpenPeripheral: controle Linux de periféricos (HyperX DuoCast e outros)"
+license = "MIT"
+readme = "README.md"
+publish = false
+default-run = "duocast-ui"
+repository = "https://github.com/MiessiGomes/OpenPeripheral"
+homepage = "https://github.com/MiessiGomes/OpenPeripheral"
+authors = ["MiessiGomes"]
+
+[lib]
+name = "duocast"
+path = "src/lib.rs"
+
+[[bin]]
+name = "duocast"
+path = "src/main.rs"
+
+[[bin]]
+name = "duocast-ui"
+path = "src/bin/duocast-ui.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+hidapi = { version = "2", default-features = false, features = ["linux-static-libusb"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+ureq = { version = "2", features = ["json"] }
+glib = "0.18"
+gtk = "0.18"
+webkit2gtk = { version = "2.0", features = ["v2_16"] }
+tray-icon = { version = "0.26.1", default-features = false, features = ["libappindicator"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[package.metadata.deb]
+name = "openperipheral"
+maintainer = "MiessiGomes"
+copyright = "2026 MiessiGomes"
+license-file = ["LICENSE", "0"]
+extended-description = """Painel Linux para periféricos reconstruídos por engenharia reversa.
+O pacote instala regras udev do DuoCast e recarrega-as no postinst."""
+depends = "$auto, udev, alsa-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, xdotool, wmctrl, x11-utils"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/duocast-ui", "usr/bin/openperipheral", "755"],
+    ["target/release/duocast", "usr/bin/duocast", "755"],
+    ["udev/99-hyperx-duocast.rules", "usr/lib/udev/rules.d/", "644"],
+    ["packaging/openperipheral.desktop", "usr/share/applications/", "644"],
+    ["icons/hicolor/scalable/apps/openperipheral.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["icons/hicolor/48x48/apps/openperipheral.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["icons/hicolor/64x64/apps/openperipheral.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["icons/hicolor/128x128/apps/openperipheral.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["icons/hicolor/256x256/apps/openperipheral.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["icons/hicolor/512x512/apps/openperipheral.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["icons/pixmaps/openperipheral.png", "usr/share/pixmaps/", "644"],
+    ["icons/gemini-banner.svg", "usr/share/doc/openperipheral/", "644"],
+    ["README.md", "usr/share/doc/openperipheral/", "644"],
+]
+maintainer-scripts = "packaging/debian"

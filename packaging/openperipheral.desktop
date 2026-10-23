@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OpenPeripheral
+Comment=Controle de periféricos RGB e áudio no Linux
+Exec=env WEBKIT_DISABLE_DMABUF_RENDERER=1 openperipheral
+Icon=openperipheral
+Terminal=false
+StartupWMClass=openperipheral
+StartupNotify=true
+Categories=Settings;HardwareSettings;AudioVideo;
+Keywords=HyperX;DuoCast;LED;microfone;

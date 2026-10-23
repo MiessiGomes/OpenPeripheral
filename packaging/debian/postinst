@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+# Instala as regras udev com o .deb; o utilizador não precisa de copiar ficheiros à mão.
+if [ "$1" = configure ]; then
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=usb || true
+        udevadm trigger --subsystem-match=hidraw || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+    fi
+    if command -v xdg-desktop-menu >/dev/null 2>&1; then
+        xdg-desktop-menu forceupdate || true
+    fi
+fi
+
+exit 0
