@@ -1,0 +1,6 @@
+/target
+*.deb
+*.ddeb
+*.snap
+.idea/
+.vscode/
