@@ -1,0 +1,9 @@
+# HyperX DuoCast — RGB controller (03f0:098c) e áudio HID (03f0:0a8c)
+# O pacote .deb instala isto em /usr/lib/udev/rules.d/ e recarrega no postinst.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="098c", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="0a8c", MODE="0666", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="098c", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="0a8c", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="098c", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="03f0", ATTRS{idProduct}=="0a8c", MODE="0666", GROUP="plugdev", TAG+="uaccess"

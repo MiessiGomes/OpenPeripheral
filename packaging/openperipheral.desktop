@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OpenPeripheral
+Comment=Controle de periféricos RGB e áudio no Linux
+Exec=openperipheral
+Terminal=false
+Categories=Settings;HardwareSettings;AudioVideo;
+Keywords=HyperX;DuoCast;LED;microfone;
+StartupNotify=false

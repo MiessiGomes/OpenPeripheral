@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+# Instala as regras udev com o .deb; o utilizador não precisa de copiar ficheiros à mão.
+if [ "$1" = configure ]; then
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=usb || true
+        udevadm trigger --subsystem-match=hidraw || true
+    fi
+fi
+
+exit 0

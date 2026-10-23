@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenPeripheral</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/app.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <span class="mark"></span>
+        <div>
+          <strong>OpenPeripheral</strong>
+          <small>HyperX DuoCast</small>
+        </div>
+      </div>
+      <nav>
+        <button data-nav="dash" data-view="dash" class="active">Dashboard</button>
+        <button data-nav="light" data-view="pick-light">Iluminação</button>
+        <button data-nav="audio" data-view="pick-audio">Áudio</button>
+      </nav>
+      <div class="aside-foot">
+        <div class="pill" id="led-pill">LED</div>
+        <div class="pill" id="audio-pill">Áudio</div>
+      </div>
+    </aside>
+    <main>
+      <header class="top">
+        <div>
+          <h1 id="page-title">Dashboard</h1>
+          <p id="page-sub">Dispositivos USB, estado do anel e mixers ALSA.</p>
+        </div>
+        <p class="notice" id="notice"></p>
+      </header>
+      <div id="update" class="banner update hidden"></div>
+      <div id="perm" class="banner hidden"></div>
+
+      <section id="view-dash" class="view">
+        <article class="card">
+          <h2>Periféricos</h2>
+          <div id="peripherals" class="devices"></div>
+        </article>
+      </section>
+
+      <section id="view-device" class="view hidden">
+        <article class="card span-2">
+          <h2 id="device-kicker">Periférico</h2>
+          <p class="hint" id="device-sum"></p>
+          <div class="option-grid" id="device-options"></div>
+          <div class="row">
+            <button type="button" id="device-back">Voltar ao dashboard</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="view-pick" class="view hidden">
+        <article class="card span-2">
+          <h2 id="pick-kicker">Escolher periférico</h2>
+          <p class="hint" id="pick-hint">Selecione o dispositivo para continuar.</p>
+          <div id="pick-list" class="devices"></div>
+          <div class="row">
+            <button type="button" id="pick-back">Voltar ao dashboard</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="view-light" class="view hidden">
+        <div class="grid-2">
+          <article class="card">
+            <h2>Cor</h2>
+            <div class="hero-row">
+              <div class="mic-wrap" id="light-mic"></div>
+              <div class="stack">
+                <label>Superior <input type="color" id="top" value="#f20000" /></label>
+                <label>Inferior <input type="color" id="bottom" value="#f20000" /></label>
+                <label class="check"><input type="checkbox" id="link" checked /> Mesmo tom</label>
+                <label class="field">Brilho <input type="range" id="bri" min="5" max="100" value="80" /></label>
+                <div class="row">
+                  <button class="accent" id="apply">Aplicar</button>
+                  <button id="save">Gravar</button>
+                  <button id="off">Apagar</button>
+                  <button id="reset">Reset</button>
+                </div>
+              </div>
+            </div>
+          </article>
+          <article class="card">
+            <h2>Efeitos no host</h2>
+            <p class="hint">O firmware não anima sozinho: o PC reenvia frames ~25×/s. Velocidade vale para todos estes efeitos.</p>
+            <div class="fx" id="fx"></div>
+            <div class="fx-speed" id="fx-speed-wrap">
+              <label class="field">
+                <span>Velocidade <b id="fx-speed-val">1.0×</b></span>
+                <input type="range" id="fx-speed" min="20" max="400" value="100" />
+              </label>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-audio" class="view hidden">
+        <div class="grid-2">
+          <article class="card span-2">
+            <h2>Teste de microfone</h2>
+            <p class="hint">Fale no DuoCast e ouça na saída do PC. Troque cardioide/omni, high-pass e ganho enquanto escuta — como o teste do NGENUITY. O jack 3.5 mm do mic é o slider PCM, separado.</p>
+            <div class="meter tall"><i id="meter"></i><b id="hold"></b></div>
+            <p class="hint" id="mon-io"></p>
+            <div class="row">
+              <button class="accent" id="listen">Ouvir no PC</button>
+              <button id="record">Gravar 4s e ouvir</button>
+              <button id="play">Repetir trecho</button>
+            </div>
+            <label class="field">Volume do teste <input type="range" id="mon-vol" min="0" max="150" value="80" /></label>
+            <p class="hint" id="mon-err"></p>
+            <div class="row">
+              <button id="polar-c">Cardioide</button>
+              <button id="polar-o">Omni</button>
+            </div>
+            <p class="hint" id="hid-err"></p>
+            <p class="hint">O ALSA do DuoCast só tem mute de captura. Ganho e high-pass entram no teste (e no HID 0x08 / 0x07). O knob físico da frente continua analógico.</p>
+            <label class="field">Ganho <input type="range" id="gain" min="0" max="100" value="70" /></label>
+            <label class="field">High-pass <input type="range" id="hp" min="0" max="100" value="0" /></label>
+          </article>
+          <article class="card">
+            <h2>Jack do mic (ALSA)</h2>
+            <p class="hint" id="mixer-err"></p>
+            <label class="check"><input type="checkbox" id="mic" /> Captura (Mic)</label>
+            <label class="check"><input type="checkbox" id="ext" /> Extension Unit</label>
+            <label class="field">Volume do jack (PCM) <input type="range" id="pcm" min="0" max="100" value="40" /></label>
+          </article>
+          <article class="card">
+            <h2>HID 0x66</h2>
+            <p class="hint">Não envia opcode 0x02 (reenumera o USB). AINR/limiter são APO Windows.</p>
+            <label class="check"><input type="checkbox" id="hmute" /> Mute HID</label>
+            <label class="check"><input type="checkbox" id="st" /> Sidetone mute</label>
+            <div class="row">
+              <button class="accent" id="ping">Ping</button>
+            </div>
+            <p class="mono" id="ping-out"></p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/mic3d.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
