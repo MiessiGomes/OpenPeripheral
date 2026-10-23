@@ -27,10 +27,15 @@ aside {
 .brand { display: flex; gap: 12px; align-items: center; }
 .brand strong { display: block; font-size: 15px; letter-spacing: 0.02em; }
 .brand small { color: var(--muted); }
-.mark {
-  width: 36px; height: 36px; border-radius: 12px;
-  background: radial-gradient(circle at 30% 30%, #7cb4ff, #1a5ad6 55%, #071018 100%);
+.brand img.mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: block;
   box-shadow: 0 0 24px #3b8aff66;
+  object-fit: cover;
+  background: #0f172a;
 }
 nav { display: flex; flex-direction: column; gap: 8px; }
 nav button, .row button, .accent {

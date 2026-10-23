@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.png binary
+*.deb binary
+*.lock text eol=lf
+postinst text eol=lf
+postrm text eol=lf
+*.sh text eol=lf
+*.desktop text eol=lf
+*.rules text eol=lf

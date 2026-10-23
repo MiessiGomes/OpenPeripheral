@@ -11,19 +11,27 @@ use duocast::monitor::{Monitor, MonitorView};
 use duocast::persist::{self, SavedState};
 use duocast::protocol::{PolarPattern, Rgb};
 use duocast::update::{self, UpdateStatus};
+use glib::Propagation;
+use gtk::prelude::*;
 use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::process::Command;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
+use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebView, WebViewExt};
 
 const INDEX: &str = include_str!("../../web/index.html");
 const CSS: &str = include_str!("../../web/app.css");
 const JS: &str = include_str!("../../web/app.js");
 const MIC3D: &str = include_str!("../../web/mic3d.js");
+const LOGO: &str = include_str!("../../icons/gemini-logo.svg");
 
 #[derive(Clone, Copy, Debug)]
 enum LiveLed {
@@ -173,12 +181,64 @@ struct MonitorBody {
     action: Option<String>,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    apply_display_workarounds();
+    let addr = SocketAddr::from(([127, 0, 0, 1], 7840));
+    let url = format!("http://{addr}");
+    let already = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok();
+    if already {
+        app_log("Já há um OpenPeripheral na porta 7840; a abrir janela contra esse servidor.");
+    } else {
+        thread::Builder::new()
+            .name("openperipheral-http".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio");
+                rt.block_on(serve_http(addr));
+            })
+            .expect("servidor HTTP");
+        wait_for_http(addr);
+    }
+    app_log(&format!("OpenPeripheral → {url}"));
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        app_log(&format!("Sem display gráfico; o painel fica só em {url}"));
+        loop {
+            thread::sleep(Duration::from_secs(3600));
+        }
+    }
+    open_native_window(&url);
+}
+
+fn apply_display_workarounds() {
+    // NVIDIA + WebKitGTK: DMA-BUF deixa o WebView preto/cinza.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+fn app_log(msg: &str) {
+    eprintln!("{msg}");
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let dir = std::path::PathBuf::from(home).join(".config/openperipheral");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("app.log"))
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+async fn serve_http(addr: SocketAddr) {
     let app = App::start();
     let router = Router::new()
         .route("/", get(|| async { Html(INDEX) }))
-        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/favicon.ico", get(|| async { logo() }))
+        .route("/logo.svg", get(|| async { logo() }))
         .route("/app.css", get(|| async { css() }))
         .route("/app.js", get(|| async { js() }))
         .route("/mic3d.js", get(|| async { mic3d() }))
@@ -188,19 +248,275 @@ async fn main() {
         .route("/api/audio", post(audio))
         .route("/api/monitor", post(monitor))
         .with_state(app);
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            app_log(&format!("HTTP {addr}: {e}"));
+            return;
+        }
+    };
+    if let Err(e) = axum::serve(listener, router).await {
+        app_log(&format!("servidor HTTP: {e}"));
+    }
+}
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 7840));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("porta 7840");
-    let url = format!("http://{addr}");
-    eprintln!("OpenPeripheral → {url}");
-    let _ = Command::new("xdg-open").arg(&url).spawn();
-    axum::serve(listener, router).await.expect("servidor");
+fn wait_for_http(addr: SocketAddr) {
+    for _ in 0..80 {
+        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("servidor HTTP não arrancou em {addr}");
+}
+
+fn open_native_window(url: &str) {
+    let page = format!("{}/", url.trim_end_matches('/'));
+    if let Some(mut child) = spawn_chrome(&page) {
+        let pid = child.id();
+        let _ = gtk::init();
+        let show_item = MenuItem::with_id("show", "Mostrar", true, None);
+        let quit_item = MenuItem::with_id("quit", "Sair", true, None);
+        let menu = Menu::new();
+        let _ = menu.append(&show_item);
+        let _ = menu.append(&quit_item);
+        let icon = load_tray_icon();
+        let mut tray = TrayIconBuilder::new()
+            .with_tooltip("OpenPeripheral")
+            .with_menu(Box::new(menu));
+        if let Some(icon) = icon {
+            tray = tray.with_icon(icon);
+        }
+        let _tray = match tray.build() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                app_log(&format!("bandeja: {e}"));
+                None
+            }
+        };
+        thread::spawn(watch_minimize_to_tray);
+        thread::spawn(move || {
+            let _ = child.wait();
+            app_log("janela fechada (X); a matar Chrome e o servidor");
+            kill_everything(pid);
+        });
+        glib::timeout_add_local(Duration::from_millis(200), move || {
+            while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+                if matches!(
+                    ev,
+                    TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
+                ) {
+                    show_app_window();
+                }
+            }
+            while let Ok(ev) = MenuEvent::receiver().try_recv() {
+                match ev.id.0.as_str() {
+                    "show" => show_app_window(),
+                    "quit" => kill_everything(pid),
+                    _ => {}
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+        gtk::main();
+        kill_everything(pid);
+    }
+    app_log("Sem Chrome/Chromium/Brave; a usar WebKitGTK.");
+    open_gtk_webview(&page);
+}
+
+fn spawn_chrome(page: &str) -> Option<Child> {
+    const BINS: &[&str] = &[
+        "google-chrome-stable",
+        "google-chrome",
+        "brave-browser",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge-stable",
+        "microsoft-edge",
+    ];
+    let bin = BINS.iter().copied().find(|b| {
+        Path::new(&format!("/usr/bin/{b}")).exists()
+            || Path::new(&format!("/usr/local/bin/{b}")).exists()
+    })?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let profile = Path::new(&home).join(".config/openperipheral/chrome-profile");
+    let _ = std::fs::create_dir_all(&profile);
+    app_log(&format!("Janela nativa via {bin} --app"));
+    match Command::new(bin)
+        .arg(format!("--app={page}"))
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-features=TranslateUI")
+        .arg("--disable-background-mode")
+        .arg("--class=OpenPeripheral")
+        .arg("--window-size=1280,840")
+        .process_group(0)
+        .spawn()
+    {
+        Ok(child) => Some(child),
+        Err(e) => {
+            app_log(&format!("falha a lançar {bin}: {e}"));
+            None
+        }
+    }
+}
+
+fn load_tray_icon() -> Option<Icon> {
+    let bytes = include_bytes!("../../icons/hicolor/64x64/apps/openperipheral.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
+fn kill_everything(chrome_pid: u32) -> ! {
+    app_log("A terminar a aplicação (Chrome + servidor HTTP)");
+    unsafe {
+        libc::kill(chrome_pid as i32, libc::SIGTERM);
+        libc::kill(-(chrome_pid as i32), libc::SIGTERM);
+    }
+    let _ = Command::new("pkill")
+        .args(["-f", "openperipheral/chrome-profile"])
+        .status();
+    thread::sleep(Duration::from_millis(200));
+    unsafe {
+        libc::kill(chrome_pid as i32, libc::SIGKILL);
+        libc::kill(-(chrome_pid as i32), libc::SIGKILL);
+    }
+    let _ = Command::new("pkill")
+        .args(["-9", "-f", "openperipheral/chrome-profile"])
+        .status();
+    std::process::exit(0);
+}
+
+fn show_app_window() {
+    for id in app_window_ids() {
+        let _ = Command::new("xdotool").args(["windowmap", &id]).status();
+        let _ = Command::new("wmctrl")
+            .args(["-i", "-r", &id, "-b", "remove,hidden"])
+            .status();
+        let _ = Command::new("xdotool")
+            .args(["windowactivate", &id])
+            .status();
+        let _ = Command::new("xdotool").args(["windowraise", &id]).status();
+        let _ = Command::new("wmctrl").args(["-i", "-a", &id]).status();
+    }
+}
+
+fn app_window_ids() -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Ok(out) = Command::new("xdotool")
+        .args(["search", "--name", "OpenPeripheral"])
+        .output()
+    {
+        if out.status.success() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let id = line.trim();
+                if !id.is_empty() {
+                    ids.push(id.into());
+                }
+            }
+        }
+    }
+    if ids.is_empty() {
+        if let Ok(out) = Command::new("wmctrl").args(["-l"]).output() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if line.contains("OpenPeripheral") {
+                    if let Some(id) = line.split_whitespace().next() {
+                        ids.push(id.into());
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn window_is_iconic(id: &str) -> bool {
+    let Ok(out) = Command::new("xprop").args(["-id", id, "WM_STATE"]).output() else {
+        return false;
+    };
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.contains("Iconic")
+}
+
+fn window_is_viewable(id: &str) -> bool {
+    let Ok(out) = Command::new("xwininfo").args(["-id", id]).output() else {
+        return false;
+    };
+    String::from_utf8_lossy(&out.stdout).contains("IsViewable")
+}
+
+fn watch_minimize_to_tray() {
+    loop {
+        for id in app_window_ids() {
+            if window_is_viewable(&id) && window_is_iconic(&id) {
+                let _ = Command::new("xdotool").args(["windowunmap", &id]).status();
+                app_log("minimizado para a bandeja");
+            }
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+}
+
+fn open_gtk_webview(page: &str) {
+    gtk::init().expect("gtk");
+    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    window.set_title("OpenPeripheral");
+    window.set_default_size(1280, 840);
+    window.set_position(gtk::WindowPosition::Center);
+
+    let webview = WebView::new();
+    webview.set_hexpand(true);
+    webview.set_vexpand(true);
+    if let Some(settings) = WebViewExt::settings(&webview) {
+        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+        settings.set_enable_developer_extras(cfg!(debug_assertions));
+        settings.set_javascript_can_open_windows_automatically(false);
+    }
+    webview.connect_load_failed(|_, _, uri, err| {
+        app_log(&format!("WebKit falhou {uri}: {err}"));
+        false
+    });
+    webview.connect_load_changed(move |_, event| {
+        app_log(&format!("WebKit load {event:?}"));
+    });
+    webview.load_uri(page);
+    window.add(&webview);
+
+    window.connect_window_state_event(|w, ev| {
+        let iconic = gtk::gdk::WindowState::ICONIFIED;
+        if ev.changed_mask().contains(iconic) && ev.new_window_state().contains(iconic) {
+            w.hide();
+            app_log("minimizado para a bandeja");
+        }
+        Propagation::Proceed
+    });
+    window.connect_delete_event(move |_, _| {
+        app_log("janela fechada; a terminar o processo");
+        webview.try_close();
+        gtk::main_quit();
+        Propagation::Proceed
+    });
+    window.connect_destroy(|_| {
+        std::process::exit(0);
+    });
+    window.show_all();
+    gtk::main();
+    std::process::exit(0);
 }
 
 fn css() -> Response {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], CSS).into_response()
+}
+
+fn logo() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        LOGO,
+    )
+        .into_response()
 }
 
 fn js() -> Response {
