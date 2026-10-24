@@ -1,0 +1,28 @@
+---
+description: Cada periférico vive na sua pasta; não misturar protocolos nem udev.
+alwaysApply: true
+---
+
+# Pastas por periférico
+
+Código, udev e assets de um dispositivo ficam **só** na pasta da família:
+
+- HyperX DuoCast → `src/peripherals/hyperx_duocast/` (udev em `…/udev/`)
+- AJAZZ → `src/peripherals/ajazz/` (AJ179 em `aj179.rs`; udev em `…/udev/`)
+- UI 3D/JS específico → `web/peripherals/<família>/`
+
+Novo dispositivo: pasta nova (`src/peripherals/corsair/`, …), `mod` em `src/peripherals/mod.rs`, udev ao lado, testes de frames no módulo. Não criar `src/foo.rs` solto.
+
+Partilha só o que é mesmo comum: `src/rgb.rs`, `src/hid.rs`, `src/error.rs`, `src/update.rs`, o dashboard (`src/bin/duocast-ui.rs`, `web/app.js`).
+
+```text
+# ❌ BAD
+src/aj179.rs
+src/protocol.rs          # mistura DuoCast + rato
+udev/99-tudo.rules
+
+# ✅ GOOD
+src/peripherals/ajazz/aj179.rs
+src/peripherals/hyperx_duocast/protocol.rs
+src/peripherals/ajazz/udev/99-ajazz-aj179.rules
+```

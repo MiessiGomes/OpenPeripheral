@@ -1,4 +1,4 @@
-use crate::protocol::Rgb;
+use crate::rgb::Rgb;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

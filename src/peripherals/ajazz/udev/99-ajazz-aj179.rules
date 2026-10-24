@@ -1,0 +1,9 @@
+# AJAZZ AJ179 — cabo Telink 248a e recetor 2.4G 249a, interface HID 2 (configuração).
+# O pacote .deb instala isto em /usr/lib/udev/rules.d/ e recarrega no postinst.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="248a", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="249a", MODE="0666", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="248a", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="249a", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="248a", MODE="0666", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="249a", MODE="0666", GROUP="plugdev", TAG+="uaccess"

@@ -8,4 +8,4 @@ fi
 cargo deb
 echo
 echo "Instalar a partir da raiz do repositório:"
-echo "  sudo apt install ./target/debian/openperipheral_0.1.0-1_amd64.deb"
+echo "  sudo apt install ./target/debian/openperipheral_0.2.1-1_amd64.deb"

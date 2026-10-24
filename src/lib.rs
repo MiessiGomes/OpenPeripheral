@@ -1,14 +1,9 @@
-pub mod device;
-pub mod effects;
 pub mod error;
-pub mod ids;
-pub mod mixer;
-pub mod monitor;
-pub mod persist;
-pub mod protocol;
+pub mod hid;
+pub mod peripherals;
+pub mod rgb;
 pub mod update;
 
-pub use device::{enumerate, AudioHid, FoundDevice, Lighting};
-pub use effects::Effect;
 pub use error::{Error, Result};
-pub use protocol::{PolarPattern, Rgb};
+pub use hid::FoundDevice;
+pub use rgb::Rgb;

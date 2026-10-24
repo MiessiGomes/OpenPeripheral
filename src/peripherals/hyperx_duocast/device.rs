@@ -1,12 +1,13 @@
-use crate::error::{Error, Result};
-use crate::ids::{AUDIO_HID_INTERFACE, AUDIO_PID, CONTROLLER_PID, HP_VID, LIGHTING_INTERFACE};
-use crate::protocol::{
+use super::ids::{AUDIO_HID_INTERFACE, AUDIO_PID, CONTROLLER_PID, HP_VID, LIGHTING_INTERFACE};
+use super::protocol::{
     apply_packet, audio_command_packet, audio_ping_ok, audio_ping_packet, audio_reply_value,
     color_packet, eot_packet, post_save_packet, reset_lights_packet, save_begin_packet,
     save_stop_packet, PolarPattern, Rgb, AUDIO_GET_GAIN, AUDIO_GET_HIGHPASS, AUDIO_GET_MUTE,
     AUDIO_GET_POLAR, AUDIO_GET_SIDETONE, AUDIO_SET_GAIN, AUDIO_SET_HIGHPASS, AUDIO_SET_MUTE,
     AUDIO_SET_POLAR, AUDIO_SET_SIDETONE, PACKET_SIZE,
 };
+use crate::error::{Error, Result};
+use crate::hid::FoundDevice;
 use hidapi::{DeviceInfo, HidApi, HidDevice};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -30,23 +31,8 @@ pub struct AudioHid {
     dev: AudioTransport,
 }
 
-#[derive(Clone, Debug)]
-pub struct FoundDevice {
-    pub vid: u16,
-    pub pid: u16,
-    pub interface: i32,
-    pub product: String,
-    pub path: String,
-}
-
 fn info_row(info: &DeviceInfo) -> FoundDevice {
-    FoundDevice {
-        vid: info.vendor_id(),
-        pid: info.product_id(),
-        interface: info.interface_number(),
-        product: info.product_string().unwrap_or("").to_string(),
-        path: info.path().to_string_lossy().into_owned(),
-    }
+    crate::hid::found_from_info(info)
 }
 
 pub fn enumerate(api: &HidApi) -> Vec<FoundDevice> {
@@ -245,7 +231,7 @@ fn open_audio_hidraw() -> Result<File> {
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
                 Error::Other(format!(
-                    "sem permissão em {} (áudio HID). Instale udev/99-hyperx-duocast.rules, rode udevadm trigger e replugue o DuoCast",
+                    "sem permissão em {} (áudio HID). Instale src/peripherals/hyperx_duocast/udev/99-hyperx-duocast.rules, rode udevadm trigger e replugue o DuoCast",
                     path.display()
                 ))
             } else {

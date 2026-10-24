@@ -15,11 +15,15 @@ let pickKind = null;
 const PAGE_OPTS = {
   light: {
     title: "Iluminação",
-    hint: "Cor, brilho e efeitos do anel RGB.",
+    hint: "Cor, brilho e efeitos do LED.",
   },
   audio: {
     title: "Áudio",
     hint: "Polar, ganho, high-pass e teste no PC.",
+  },
+  mouse: {
+    title: "DPI e sensor",
+    hint: "Taxa, LOD, bateria e botões deste periférico.",
   },
 };
 
@@ -28,8 +32,9 @@ const VIEW_TITLES = {
   device: ["Periférico", "Iluminação e áudio deste dispositivo."],
   "pick-light": ["Iluminação", "Escolha o periférico para ajustar o LED."],
   "pick-audio": ["Áudio", "Escolha o periférico para captura e teste."],
-  light: ["Iluminação", "Dois anéis no controlador 03F0:098C, interface 0."],
+  light: ["Iluminação", "LED do periférico escolhido."],
   audio: ["Áudio", "Ouça o DuoCast no PC e teste polar, high-pass e ganho."],
+  mouse: ["DPI e sensor", "Taxa, LOD, bateria e botões do periférico escolhido."],
 };
 
 function paintMic(id, top, bot, effect, speed) {
@@ -108,8 +113,8 @@ function fillPicker() {
   $("pick-kicker").textContent = need === "light" ? "Iluminação · periférico" : "Áudio · periférico";
   $("pick-hint").textContent =
     need === "light"
-      ? "Clique no microfone (ou outro dispositivo com LED) para abrir a iluminação."
-      : "Clique no microfone (ou outro dispositivo com captura) para abrir o áudio.";
+      ? "Clique no periférico para abrir a iluminação."
+      : "Clique no periférico para captura e teste.";
   const list = ((lastState && lastState.peripherals) || []).filter((p) => pagesOf(p).includes(need));
   renderPeripherals(list, $("pick-list"), (p) => openPage(need, p.id));
 }
@@ -128,6 +133,9 @@ function render(s) {
   lastState = s;
   $("led-pill").textContent = s.lighting_ok ? "LED ON" : "LED OFF";
   $("led-pill").classList.toggle("ok", s.lighting_ok);
+  const mouseOn = !!(s.aj179 && s.aj179.connected);
+  $("mouse-pill").textContent = mouseOn ? "MOUSE ON" : "MOUSE OFF";
+  $("mouse-pill").classList.toggle("ok", mouseOn);
   setAudioBadge(s.muted);
   $("notice").textContent = s.notice || "";
   const upd = $("update");
@@ -152,6 +160,7 @@ function render(s) {
   renderPeripherals(s.peripherals || [], $("peripherals"), (p) => openDevice(p.id));
   if (view === "device") fillDeviceHub();
   if (view === "pick-light" || view === "pick-audio") fillPicker();
+  paintAj179(s.aj179 || {});
 
   paintMic("light-mic", s.led.top, s.led.bottom, s.led.effect, s.led.speed);
   setMeter("meter", "hold", s.monitor);
@@ -225,6 +234,170 @@ async function sendLed(extra) {
   }
 }
 
+async function sendAj179(body) {
+  applying = true;
+  try {
+    render(await api("/api/aj179", body));
+  } catch (e) {
+    $("notice").textContent = e.message;
+  } finally {
+    applying = false;
+  }
+}
+
+function paintAj179(m) {
+  if (!m) return;
+  const id = m.device_id || "AJ179";
+  const bat = m.battery == null ? "—" : m.battery + "%";
+  const link = m.link || "";
+  const awake = m.awake ? "acordado" : "a dormir";
+  $("aj-sum").textContent = m.connected
+    ? `${id} · ${link} · ${awake}${m.rx_fw ? " · fw " + m.rx_fw : ""}`
+    : "AJ179 desconectado.";
+  $("aj-bat").textContent = m.charging ? `⚡ ${bat}` : `bateria ${bat}`;
+  $("aj-err").textContent = m.error || "";
+  if (!applying) {
+    if (m.rate_hz) $("aj-rate").value = String(m.rate_hz);
+    if (m.lod) $("aj-lod").value = String(m.lod);
+    $("aj-ms").checked = !!m.motion_sync;
+    $("aj-as").checked = !!m.angle_snap;
+    const led = m.led_on !== false;
+    const ledA = $("aj-led-on");
+    const ledB = $("aj-led-on-light");
+    if (ledA) ledA.checked = led;
+    if (ledB) ledB.checked = led;
+    if (m.light_color && m.light_color !== "#000000") $("aj-color").value = m.light_color;
+    $("aj-bri").value = m.light_brightness > 0 ? m.light_brightness : 4;
+    $("aj-spd").value = m.light_speed;
+  }
+  const lightNames = { 0: "desligado", 2: "respiração", 3: "constante", 4: "néon" };
+  const lightEl = $("aj-light-sum");
+  if (lightEl) {
+    const name = lightNames[m.light_mode] || (m.light_mode == null ? "—" : "modo " + m.light_mode);
+    lightEl.textContent = m.connected
+      ? `LED ${m.led_on === false ? "off" : "on"} · ${name} · ${m.light_color || "#000000"} · brilho ${m.light_brightness ?? "—"}`
+      : "";
+  }
+  paintDpiRows(m);
+  paintButtons(m);
+}
+
+const AJ_BTN_OPTS = [
+  ["left", "Esquerdo"],
+  ["right", "Direito"],
+  ["middle", "Meio"],
+  ["back", "Traseiro"],
+  ["forward", "Dianteiro"],
+  ["scroll-up", "Scroll ↑"],
+  ["scroll-down", "Scroll ↓"],
+  ["dpi-loop", "DPI ciclo"],
+  ["dpi-up", "DPI +"],
+  ["dpi-down", "DPI −"],
+  ["play-pause", "Play/Pause"],
+  ["next", "Seguinte"],
+  ["previous", "Anterior"],
+  ["stop", "Stop"],
+  ["volume-up", "Volume +"],
+  ["volume-down", "Volume −"],
+  ["mute", "Mudo"],
+  ["disabled", "Desligado"],
+];
+
+function paintDpiRows(m) {
+  const box = $("aj-dpi-stages");
+  const stages = m.dpi || [];
+  if (!stages.length) return;
+  if (box.childElementCount !== stages.length) {
+    box.innerHTML = "";
+    stages.forEach((d, i) => {
+      const row = document.createElement("div");
+      row.className = "dpi-row";
+      row.innerHTML = `<span>${i + 1}</span><input type="number" min="50" max="26000" step="50" id="aj-dpi-val-${i}" /><input type="color" id="aj-dpi-col-${i}" /><button type="button" class="pick" data-i="${i}">Usar</button>`;
+      box.appendChild(row);
+      const val = $(`aj-dpi-val-${i}`);
+      const col = $(`aj-dpi-col-${i}`);
+      val.onchange = () => commitDpi();
+      col.onchange = () => commitDpi();
+      row.querySelector(".pick").onclick = () => useDpiStage(i);
+    });
+  }
+  stages.forEach((d, i) => {
+    const val = $(`aj-dpi-val-${i}`);
+    const col = $(`aj-dpi-col-${i}`);
+    const btn = box.querySelector(`.pick[data-i="${i}"]`);
+    if (btn) btn.classList.toggle("accent", m.dpi_index === i);
+    if (!applying && val && document.activeElement !== val) val.value = d.value;
+    if (!applying && col && document.activeElement !== col) col.value = d.color || "#ff0000";
+  });
+}
+
+function dpiFromForm() {
+  const box = $("aj-dpi-stages");
+  const n = box.querySelectorAll(".dpi-row").length;
+  const dpi_values = [];
+  const dpi_colors = [];
+  for (let i = 0; i < n; i++) {
+    dpi_values.push(Number($(`aj-dpi-val-${i}`).value));
+    dpi_colors.push($(`aj-dpi-col-${i}`).value);
+  }
+  return { dpi_values, dpi_colors };
+}
+
+function useDpiStage(i) {
+  const { dpi_values } = dpiFromForm();
+  if (dpi_values.length < 2 || dpi_values.some((v) => !Number.isFinite(v) || v < 50)) return;
+  document.querySelectorAll("#aj-dpi-stages .pick").forEach((b) => {
+    b.classList.toggle("accent", Number(b.dataset.i) === i);
+  });
+  sendAj179({ dpi_index: i, dpi_values });
+}
+
+function commitDpi() {
+  const { dpi_values, dpi_colors } = dpiFromForm();
+  if (dpi_values.length < 2 || dpi_values.some((v) => !Number.isFinite(v) || v < 50)) return;
+  sendAj179({ dpi_values, dpi_colors });
+}
+
+function paintButtons(m) {
+  const host = $("aj-buttons");
+  const list = m.buttons || [];
+  if (!list.length) return;
+  if (host.childElementCount !== list.length) {
+    host.innerHTML = "";
+    list.forEach((b) => {
+      const lab = document.createElement("label");
+      lab.className = "field";
+      const sel = document.createElement("select");
+      sel.id = `aj-btn-${b.index}`;
+      sel.disabled = !!b.locked;
+      for (const [v, t] of AJ_BTN_OPTS) {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = t;
+        sel.appendChild(o);
+      }
+      sel.onchange = () => sendAj179({ button_index: b.index, button_action: sel.value });
+      lab.append(`${b.index + 1}. ${b.name}`, sel);
+      host.appendChild(lab);
+    });
+  }
+  list.forEach((b) => {
+    const sel = $(`aj-btn-${b.index}`);
+    if (!sel) return;
+    const known = AJ_BTN_OPTS.some((o) => o[0] === b.action);
+    if (!known && b.action) {
+      let extra = [...sel.options].find((o) => o.value === b.action);
+      if (!extra) {
+        extra = document.createElement("option");
+        extra.value = b.action;
+        extra.textContent = b.action;
+        sel.appendChild(extra);
+      }
+    }
+    if (!applying && document.activeElement !== sel) sel.value = b.action;
+  });
+}
+
 async function sendAudio(body) {
   applying = true;
   try {
@@ -237,7 +410,6 @@ async function sendAudio(body) {
 }
 
 function navFor(name) {
-  if (name === "device") return "dash";
   if (name === "pick-light" || name === "light") return "light";
   if (name === "pick-audio" || name === "audio") return "audio";
   return "dash";
@@ -252,9 +424,17 @@ function show(name) {
   });
   $("view-dash").classList.toggle("hidden", name !== "dash");
   $("view-device").classList.toggle("hidden", name !== "device");
-  $("view-pick").classList.toggle("hidden", name !== "pick-light" && name !== "pick-audio");
+  $("view-pick").classList.toggle(
+    "hidden",
+    name !== "pick-light" && name !== "pick-audio"
+  );
   $("view-light").classList.toggle("hidden", name !== "light");
   $("view-audio").classList.toggle("hidden", name !== "audio");
+  $("view-mouse").classList.toggle("hidden", name !== "mouse");
+  const ajLight = selectedId === "aj179";
+  $("duo-light-card").classList.toggle("hidden", name === "light" && ajLight);
+  $("duo-fx-card").classList.toggle("hidden", name === "light" && ajLight);
+  $("aj-light-card").classList.toggle("hidden", !(name === "light" && ajLight));
   const titles = VIEW_TITLES[name] || VIEW_TITLES.dash;
   $("page-title").textContent = titles[0];
   $("page-sub").textContent = titles[1];
@@ -333,6 +513,32 @@ $("gain").oninput = () => {
   gainTimer = setTimeout(() => sendAudio({ gain: Number($("gain").value) }), 80);
 };
 $("ping").onclick = () => sendAudio({ ping: true });
+$("aj-rate").onchange = () => sendAj179({ rate: Number($("aj-rate").value) });
+$("aj-lod").onchange = () => sendAj179({ lod: Number($("aj-lod").value) });
+$("aj-ms").onchange = () => sendAj179({ motion_sync: $("aj-ms").checked });
+$("aj-as").onchange = () => sendAj179({ angle_snap: $("aj-as").checked });
+function onAjLedToggle(el) {
+  const on = el.checked;
+  const a = $("aj-led-on");
+  const b = $("aj-led-on-light");
+  if (a) a.checked = on;
+  if (b) b.checked = on;
+  sendAj179({ led_on: on });
+}
+$("aj-led-on").onchange = () => onAjLedToggle($("aj-led-on"));
+$("aj-led-on-light").onchange = () => onAjLedToggle($("aj-led-on-light"));
+function ajLightBody(mode) {
+  return {
+    light_mode: mode,
+    color: $("aj-color").value,
+    brightness: Math.max(1, Number($("aj-bri").value) || 4),
+    speed: Number($("aj-spd").value),
+  };
+}
+$("aj-const").onclick = () => sendAj179(ajLightBody("constant"));
+$("aj-breath").onclick = () => sendAj179(ajLightBody("breathing"));
+$("aj-led-off").onclick = () => sendAj179({ led_on: false });
+$("aj-btn-reset").onclick = () => sendAj179({ buttons_reset: true });
 
 async function sendMonitor(body) {
   applying = true;
