@@ -1,6 +1,6 @@
 [package]
 name = "duocast-ctl"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "OpenPeripheral: controle Linux de periféricos (HyperX DuoCast e outros)"
 license = "MIT"
@@ -46,14 +46,15 @@ maintainer = "MiessiGomes"
 copyright = "2026 MiessiGomes"
 license-file = ["LICENSE", "0"]
 extended-description = """Painel Linux para periféricos reconstruídos por engenharia reversa.
-O pacote instala regras udev do DuoCast e recarrega-as no postinst."""
+O pacote instala regras udev do DuoCast e do AJ179 e recarrega-as no postinst."""
 depends = "$auto, udev, alsa-utils, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, xdotool, wmctrl, x11-utils"
 section = "utils"
 priority = "optional"
 assets = [
     ["target/release/duocast-ui", "usr/bin/openperipheral", "755"],
     ["target/release/duocast", "usr/bin/duocast", "755"],
-    ["udev/99-hyperx-duocast.rules", "usr/lib/udev/rules.d/", "644"],
+    ["src/peripherals/hyperx_duocast/udev/99-hyperx-duocast.rules", "usr/lib/udev/rules.d/", "644"],
+    ["src/peripherals/ajazz/udev/99-ajazz-aj179.rules", "usr/lib/udev/rules.d/", "644"],
     ["packaging/openperipheral.desktop", "usr/share/applications/", "644"],
     ["icons/hicolor/scalable/apps/openperipheral.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["icons/hicolor/48x48/apps/openperipheral.png", "usr/share/icons/hicolor/48x48/apps/", "644"],

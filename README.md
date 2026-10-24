@@ -20,17 +20,19 @@ A UI abre **numa janela própria** (WebKit embutido, como o Discord). O HTTP fic
 - [Como contribuir um periférico novo](#como-contribuir-um-periférico-novo)
 - [Licença](#licença)
 
+Agentes: ver [AGENTS.md](AGENTS.md) (pastas por periférico).
+
 ## Dispositivos portados
 
 | Periférico | Tipo | Estado |
 |---|---|---|
 | HyperX DuoCast | microfone | suportado (LED, polar, mute, ganho/high-pass no teste, mixers ALSA) |
+| AJAZZ AJ179 | mouse | suportado (DPI+cores, taxa, LED, LOD, bateria, botões; cabo `248a:5c2e` e dongle `249a:5c2f`) |
 
 ## Fila (ainda sem porto)
 
 | Periférico | Tipo | Notas |
 |---|---|---|
-| Ajazz AJ179 | mouse | pendente |
 | Corsair Void Elite Wireless | headset | pendente |
 | Blitzwolf BW-KB1 | teclado | pendente |
 
@@ -43,14 +45,14 @@ PRs que adicionem um destes (ou outro) são bem-vindos. Prefira evidência do ar
 
 ```bash
 cd /caminho/para/OpenPeripheral
-sudo apt install ./target/debian/openperipheral_0.1.0-1_amd64.deb
+sudo apt install ./target/debian/openperipheral_0.2.0-1_amd64.deb
 ```
 
 A partir de uma release, o ficheiro pode estar noutro sítio; use o caminho real, sem o glob `*.deb` se o `apt` não expandir o `*`.
 
 3. Abra **OpenPeripheral** no menu de aplicações ou rode `openperipheral`. Se o microfone já estava ligado, reconecte o USB uma vez para o hidraw herdar as permissões novas.
 
-O CLI fica em `duocast` (`duocast list`, `duocast led`, `duocast hid`, …).
+O CLI fica em `duocast` (`duocast list`, `duocast led`, `duocast hid`, `duocast aj179 show`, …).
 
 Atualizações: a UI consulta a API pública do GitHub (`releases/latest`, senão a tag mais recente) e avisa quando a versão instalada é mais antiga. Não usa Dependabot.
 
@@ -92,8 +94,8 @@ Dependências de sistema: `pkg-config`, `libusb-1.0`, `libudev`, `libgtk-3`, `li
 cargo install cargo-deb
 ./packaging/build-deb.sh
 # imprime o caminho, por exemplo:
-#   target/debian/openperipheral_0.1.0-1_amd64.deb
-sudo apt install ./target/debian/openperipheral_0.1.0-1_amd64.deb
+#   target/debian/openperipheral_0.2.0-1_amd64.deb
+sudo apt install ./target/debian/openperipheral_0.2.0-1_amd64.deb
 ```
 
 O pacote instala:
@@ -101,6 +103,7 @@ O pacote instala:
 - `/usr/bin/openperipheral` — dashboard
 - `/usr/bin/duocast` — CLI
 - `/usr/lib/udev/rules.d/99-hyperx-duocast.rules`
+- `/usr/lib/udev/rules.d/99-ajazz-aj179.rules`
 - `/usr/share/applications/openperipheral.desktop`
 
 O `postinst` corre `udevadm control --reload-rules` e `udevadm trigger`.
@@ -110,7 +113,9 @@ O `postinst` corre `udevadm control --reload-rules` e `udevadm trigger`.
 Só neste caso copie as regras uma vez:
 
 ```bash
-sudo cp udev/99-hyperx-duocast.rules /etc/udev/rules.d/
+sudo cp src/peripherals/hyperx_duocast/udev/99-hyperx-duocast.rules \
+        src/peripherals/ajazz/udev/99-ajazz-aj179.rules \
+        /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
@@ -118,11 +123,13 @@ sudo udevadm trigger
 ## Como contribuir um periférico novo
 
 1. Documente IDs USB (`lsusb -v`), interfaces HID e o que o software original grava (feature reports, não exploits).
-2. Isole o protocolo num módulo (`src/`), com testes de frames, e ligue um card no dashboard (`pages`: `light`, `audio`, etc.).
-3. Inclua regras udev no pacote (ficheiro em `udev/` + `assets` no `Cargo.toml`) para o utilizador final não repetir `sudo cp`.
+2. Pasta nova em `src/peripherals/<família>/` (ver `AGENTS.md`), protocolo com testes de frames, card no dashboard (`pages`).
+3. Regras udev na mesma pasta (`…/udev/`) e `assets` no `Cargo.toml`.
 4. `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 
 O DuoCast é o modelo de referência: dois USB (`03F0:098C` LED, `03F0:0A8C` áudio HID `0x66`). Não envie o opcode `0x02` nesse HID (reennumera o dispositivo).
+
+O AJ179 usa HID vendor de 32 bytes na interface 2 (`HidD`/`hid_write` no Driver (X), checksum = soma dos bytes 4–30). Não envie os comandos de OTA do flasher.
 
 ## Licença
 

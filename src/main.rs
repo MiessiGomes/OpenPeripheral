@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use duocast::device::{enumerate, AudioHid, Lighting};
-use duocast::effects::{frame, Effect};
-use duocast::mixer;
-use duocast::protocol::{PolarPattern, Rgb};
+use duocast::peripherals::ajazz::aj179::{self, Mouse as Aj179};
+use duocast::peripherals::hyperx_duocast::device::{enumerate, AudioHid, Lighting};
+use duocast::peripherals::hyperx_duocast::effects::{frame, Effect};
+use duocast::peripherals::hyperx_duocast::mixer;
+use duocast::peripherals::hyperx_duocast::protocol::PolarPattern;
+use duocast::rgb::Rgb;
 use hidapi::HidApi;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,7 +13,7 @@ use std::time::{Duration, Instant};
 #[derive(Parser)]
 #[command(
     name = "duocast",
-    about = "Controle Linux do HyperX DuoCast (LED HID + mixers ALSA)",
+    about = "Controle Linux OpenPeripheral (DuoCast + AJ179)",
     version
 )]
 struct Cli {
@@ -41,6 +43,12 @@ enum Cmd {
     Hid {
         #[command(subcommand)]
         cmd: HidCmd,
+    },
+    /// AJAZZ AJ179 (HID 32 bytes, interface 2)
+    #[command(name = "aj179")]
+    Aj179 {
+        #[command(subcommand)]
+        cmd: Aj179Cmd,
     },
 }
 
@@ -164,6 +172,49 @@ enum OnOff {
     Off,
 }
 
+#[derive(Subcommand)]
+enum Aj179Cmd {
+    /// Identidade, bateria e firmware do recetor
+    Info,
+    /// DPI, taxa, LED, sensor e energia (lidos do mouse)
+    Show,
+    Rate {
+        hz: Option<u16>,
+    },
+    Lighting {
+        #[arg(value_enum)]
+        mode: Option<Aj179Light>,
+        #[arg(long)]
+        color: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        brightness: u8,
+        #[arg(long, default_value_t = 2)]
+        speed: u8,
+    },
+    /// Estágio 1–6 e valor (passos de 50)
+    Dpi {
+        stage: Option<u8>,
+        value: Option<u16>,
+    },
+    /// Cor hex do estágio DPI
+    DpiColour {
+        stage: u8,
+        color: String,
+    },
+    Button {
+        index: Option<u8>,
+        action: Option<String>,
+    },
+    ButtonsReset,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Aj179Light {
+    Off,
+    Breathing,
+    Constant,
+}
+
 fn parse_rgb(s: &str) -> Result<Rgb> {
     Rgb::parse_hex(s).map_err(anyhow::Error::msg)
 }
@@ -174,12 +225,11 @@ fn main() -> Result<()> {
         Cmd::List => {
             let api = HidApi::new()?;
             let found = enumerate(&api);
-            if found.is_empty() {
-                println!(
-                    "Nenhum DuoCast visível. Instale udev/99-hyperx-duocast.rules e replugue."
-                );
+            let mice = aj179::enumerate(&api);
+            if found.is_empty() && mice.is_empty() {
+                println!("Nenhum periférico visível. Instale as regras udev e replugue o USB.");
             }
-            for d in found {
+            for d in found.into_iter().chain(mice) {
                 println!(
                     "{:04x}:{:04x} iface={} {}  {}",
                     d.vid, d.pid, d.interface, d.product, d.path
@@ -358,8 +408,220 @@ fn main() -> Result<()> {
                 },
             }
         }
+        Cmd::Aj179 { cmd } => {
+            let mouse = Aj179::open().context("AJ179 interface 2 (hidraw)")?;
+            match cmd {
+                Aj179Cmd::Info | Aj179Cmd::Show => {
+                    let s = mouse.snapshot();
+                    if let Some(e) = &s.error {
+                        println!("aviso: {e}");
+                    }
+                    println!("{:04x}:{:04x} {}  {}", s.vid, s.pid, s.link, s.path);
+                    if let Some(i) = &s.info {
+                        println!(
+                            "id {}  sensor {:02x}  bateria {}%  {}  {}",
+                            i.device_id,
+                            i.sensor_id,
+                            i.battery,
+                            if i.charging { "a carregar" } else { "bateria" },
+                            if i.connected { "acordado" } else { "a dormir" }
+                        );
+                    }
+                    if matches!(cmd, Aj179Cmd::Show) {
+                        if let Some(hz) = s.rate_hz {
+                            println!("taxa {hz} Hz");
+                        }
+                        if !s.dpi.is_empty() {
+                            let idx = s.dpi_index.unwrap_or(0);
+                            let stages: Vec<String> = s
+                                .dpi
+                                .iter()
+                                .enumerate()
+                                .map(|(i, d)| {
+                                    format!(
+                                        "{}{} {}",
+                                        d.value,
+                                        if i as u8 == idx { "*" } else { "" },
+                                        d.color.to_hex()
+                                    )
+                                })
+                                .collect();
+                            println!("dpi {}", stages.join(" | "));
+                        }
+                        if let Some(l) = &s.lighting {
+                            println!(
+                                "luz modo {} brilho {} velocidade {} {}",
+                                l.mode,
+                                l.brightness,
+                                l.speed,
+                                l.color.to_hex()
+                            );
+                        }
+                        if let Some(p) = &s.sensor {
+                            println!(
+                                "lod {} mm  motion-sync {}  angle-snap {}",
+                                p.lod, p.motion_sync, p.angle_snap
+                            );
+                        }
+                        if let Some(p) = &s.power {
+                            println!(
+                                "sleep {}  wake-move {}  luz-ao-mover-off {}  debounce {}",
+                                p.sleep, p.wake_on_move, p.lights_off_on_move, p.debounce
+                            );
+                        }
+                        if let Some(fw) = &s.rx_fw {
+                            println!("fw recetor {fw}");
+                        }
+                        for (i, code) in s.buttons.iter().enumerate() {
+                            let name = aj179::BUTTON_NAMES.get(i).copied().unwrap_or("?");
+                            println!("botão {} ({name}): {}", i + 1, aj179::button_action(*code));
+                        }
+                    }
+                }
+                Aj179Cmd::Rate { hz } => match hz {
+                    Some(v) => {
+                        mouse.set_rate(v)?;
+                        println!("{v}");
+                    }
+                    None => {
+                        let r = mouse.get(aj179::CMD_GET_RATE)?;
+                        println!("{}", aj179::flag_to_rate(r[4]).unwrap_or(0));
+                    }
+                },
+                Aj179Cmd::Lighting {
+                    mode,
+                    color,
+                    brightness,
+                    speed,
+                } => match mode {
+                    Some(m) => {
+                        let rgb = color
+                            .as_deref()
+                            .map(parse_rgb)
+                            .transpose()?
+                            .unwrap_or(Rgb::new(0xff, 0, 0));
+                        let mode = match m {
+                            Aj179Light::Off => aj179::LIGHT_OFF,
+                            Aj179Light::Breathing => aj179::LIGHT_BREATHING,
+                            Aj179Light::Constant => aj179::LIGHT_CONSTANT,
+                        };
+                        mouse.set_lighting(mode, brightness, speed, rgb)?;
+                        println!("ok");
+                    }
+                    None => {
+                        let r = mouse.get(aj179::CMD_GET_LIGHT)?;
+                        if let Some(l) = aj179::parse_lighting(&r) {
+                            println!(
+                                "modo {} brilho {} velocidade {} {}",
+                                l.mode,
+                                l.brightness,
+                                l.speed,
+                                l.color.to_hex()
+                            );
+                        }
+                    }
+                },
+                Aj179Cmd::Dpi { stage, value } => {
+                    let snap = mouse.snapshot();
+                    let sensor = snap
+                        .info
+                        .as_ref()
+                        .map(|i| i.sensor_id)
+                        .unwrap_or(aj179::SENSOR_PAW3395);
+                    let mut stages: Vec<u16> = snap.dpi.iter().map(|d| d.value).collect();
+                    if stages.is_empty() {
+                        anyhow::bail!("DPI ainda não lido; mexa no mouse");
+                    }
+                    match (stage, value) {
+                        (Some(st), Some(v)) => {
+                            let i = stage_index(st, stages.len())?;
+                            stages[i] = aj179::clamp_dpi(sensor, v);
+                            mouse.set_dpi_stages(sensor, snap.dpi_index.unwrap_or(0), &stages)?;
+                            println!("{}", stages[i]);
+                        }
+                        (Some(st), None) => {
+                            let i = stage_index(st, stages.len())?;
+                            println!("{}", stages[i]);
+                        }
+                        (None, None) => {
+                            println!(
+                                "{}",
+                                stages
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            );
+                        }
+                        (None, Some(_)) => anyhow::bail!("indique o estágio 1–6"),
+                    }
+                }
+                Aj179Cmd::DpiColour { stage, color } => {
+                    let snap = mouse.snapshot();
+                    let mut colors: Vec<Rgb> = snap.dpi.iter().map(|d| d.color).collect();
+                    if colors.is_empty() {
+                        anyhow::bail!("cores DPI ainda não lidas; mexa no mouse");
+                    }
+                    let i = stage_index(stage, colors.len())?;
+                    colors[i] = parse_rgb(&color)?;
+                    mouse.set_dpi_colors(&colors)?;
+                    println!("{}", colors[i].to_hex());
+                }
+                Aj179Cmd::Button { index, action } => {
+                    let snap = mouse.snapshot();
+                    let mut keys = snap.buttons;
+                    if keys.len() < aj179::BUTTON_COUNT {
+                        keys = aj179::FACTORY_BUTTONS.to_vec();
+                    }
+                    match (index, action) {
+                        (Some(n), Some(act)) => {
+                            let i = button_index(n)?;
+                            if i == 0 {
+                                anyhow::bail!("o botão esquerdo não é remapeado");
+                            }
+                            keys[i] = aj179::encode_button(&act)?;
+                            mouse.set_buttons(&keys)?;
+                            println!("{} → {act}", aj179::BUTTON_NAMES[i]);
+                        }
+                        (Some(n), None) => {
+                            let i = button_index(n)?;
+                            println!("{}", aj179::button_action(keys[i]));
+                        }
+                        (None, None) => {
+                            for (i, code) in keys.iter().enumerate() {
+                                println!(
+                                    "{} {}: {}",
+                                    i + 1,
+                                    aj179::BUTTON_NAMES[i],
+                                    aj179::button_action(*code)
+                                );
+                            }
+                        }
+                        (None, Some(_)) => anyhow::bail!("indique o botão 2–6"),
+                    }
+                }
+                Aj179Cmd::ButtonsReset => {
+                    mouse.set_buttons(&aj179::FACTORY_BUTTONS)?;
+                    println!("fábrica");
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn stage_index(stage: u8, len: usize) -> Result<usize> {
+    if stage < 1 || stage as usize > len {
+        anyhow::bail!("estágio DPI deve ser 1–{len}");
+    }
+    Ok((stage - 1) as usize)
+}
+
+fn button_index(n: u8) -> Result<usize> {
+    if n < 1 || n as usize > aj179::BUTTON_COUNT {
+        anyhow::bail!("botão deve ser 1–{}", aj179::BUTTON_COUNT);
+    }
+    Ok((n - 1) as usize)
 }
 
 fn hold_solid(led: &Lighting, top: Rgb, bottom: Rgb) -> Result<()> {

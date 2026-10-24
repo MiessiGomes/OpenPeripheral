@@ -8,6 +8,8 @@ pub enum Error {
     LightingNotFound,
     #[error("DuoCast áudio HID 03F0:0A8C interface 3 não encontrado")]
     AudioHidNotFound,
+    #[error("AJAZZ AJ179 (interface HID 2) não encontrado")]
+    Aj179NotFound,
     #[error("amixer falhou: {0}")]
     Mixer(String),
     #[error("{0}")]

@@ -1,4 +1,4 @@
-use crate::protocol::Rgb;
+use crate::rgb::Rgb;
 
 /// Efeitos gerados no host (o firmware do DuoCast aplica frames RGB 0x81).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

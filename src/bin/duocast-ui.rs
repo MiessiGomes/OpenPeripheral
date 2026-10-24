@@ -3,13 +3,15 @@ use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use duocast::device::{enumerate, AudioHid, Lighting};
-use duocast::effects::{frame, Effect};
-use duocast::ids::{AUDIO_PID, CONTROLLER_PID};
-use duocast::mixer::{self, MixerState};
-use duocast::monitor::{Monitor, MonitorView};
-use duocast::persist::{self, SavedState};
-use duocast::protocol::{PolarPattern, Rgb};
+use duocast::peripherals::ajazz::aj179::{self, Mouse as Aj179, Snapshot as Aj179Snap};
+use duocast::peripherals::hyperx_duocast::device::{enumerate, AudioHid, Lighting};
+use duocast::peripherals::hyperx_duocast::effects::{frame, Effect};
+use duocast::peripherals::hyperx_duocast::ids::{AUDIO_PID, CONTROLLER_PID};
+use duocast::peripherals::hyperx_duocast::mixer::{self, MixerState};
+use duocast::peripherals::hyperx_duocast::monitor::{Monitor, MonitorView};
+use duocast::peripherals::hyperx_duocast::persist::{self, SavedState};
+use duocast::peripherals::hyperx_duocast::protocol::PolarPattern;
+use duocast::rgb::Rgb;
 use duocast::update::{self, UpdateStatus};
 use glib::Propagation;
 use gtk::prelude::*;
@@ -30,7 +32,7 @@ use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebView, WebViewExt};
 const INDEX: &str = include_str!("../../web/index.html");
 const CSS: &str = include_str!("../../web/app.css");
 const JS: &str = include_str!("../../web/app.js");
-const MIC3D: &str = include_str!("../../web/mic3d.js");
+const MIC3D: &str = include_str!("../../web/peripherals/hyperx_duocast/mic3d.js");
 const LOGO: &str = include_str!("../../icons/gemini-logo.svg");
 
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +63,7 @@ struct App {
     lighting_ok: Arc<AtomicBool>,
     audio_ok: Arc<AtomicBool>,
     hid: Arc<Mutex<HidSnapshot>>,
+    aj179: Arc<Mutex<Aj179Snap>>,
     prefs: Arc<Mutex<LedPrefs>>,
     monitor: Arc<Monitor>,
     persist_fw: Arc<AtomicBool>,
@@ -113,8 +116,50 @@ struct AppStateView {
     monitor: MonitorView,
     muted: bool,
     peripherals: Vec<PeripheralView>,
+    aj179: Aj179View,
     version: String,
     update: UpdateStatus,
+}
+
+#[derive(Serialize, Clone, Default)]
+struct Aj179View {
+    connected: bool,
+    link: String,
+    vid: String,
+    pid: String,
+    device_id: String,
+    battery: Option<u8>,
+    charging: bool,
+    awake: bool,
+    rate_hz: Option<u16>,
+    dpi_index: Option<u8>,
+    dpi: Vec<Aj179DpiView>,
+    light_mode: Option<u8>,
+    light_brightness: u8,
+    light_speed: u8,
+    light_color: String,
+    lod: Option<u8>,
+    motion_sync: bool,
+    angle_snap: bool,
+    sleep: Option<u8>,
+    wake_on_move: bool,
+    rx_fw: Option<String>,
+    error: Option<String>,
+    buttons: Vec<Aj179ButtonView>,
+}
+
+#[derive(Serialize, Clone)]
+struct Aj179ButtonView {
+    index: u8,
+    name: String,
+    action: String,
+    locked: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct Aj179DpiView {
+    value: u16,
+    color: String,
 }
 
 #[derive(Serialize)]
@@ -172,6 +217,38 @@ struct AudioBody {
     pcm_on: Option<bool>,
     extension: Option<bool>,
     ping: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+struct Aj179Body {
+    #[serde(default)]
+    rate: Option<u16>,
+    #[serde(default)]
+    light_mode: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    brightness: Option<u8>,
+    #[serde(default)]
+    speed: Option<u8>,
+    #[serde(default)]
+    lod: Option<u8>,
+    #[serde(default)]
+    motion_sync: Option<bool>,
+    #[serde(default)]
+    angle_snap: Option<bool>,
+    #[serde(default)]
+    dpi_index: Option<u8>,
+    #[serde(default)]
+    dpi_values: Option<Vec<u16>>,
+    #[serde(default)]
+    dpi_colors: Option<Vec<String>>,
+    #[serde(default)]
+    button_index: Option<u8>,
+    #[serde(default)]
+    button_action: Option<String>,
+    #[serde(default)]
+    buttons_reset: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -247,6 +324,7 @@ async fn serve_http(addr: SocketAddr) {
         .route("/api/led", post(led))
         .route("/api/audio", post(audio))
         .route("/api/monitor", post(monitor))
+        .route("/api/aj179", post(aj179_api))
         .with_state(app);
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
@@ -562,6 +640,8 @@ impl App {
             led_touch.clone(),
         );
         spawn_hid_poller(hid.clone(), audio_ok.clone());
+        let aj179 = Arc::new(Mutex::new(Aj179Snap::default()));
+        spawn_aj179_poller(aj179.clone());
         let update = Arc::new(Mutex::new(UpdateStatus::default()));
         spawn_update_checker(update.clone());
         Self {
@@ -570,6 +650,7 @@ impl App {
             lighting_ok,
             audio_ok,
             hid,
+            aj179,
             prefs: Arc::new(Mutex::new(prefs)),
             monitor: Arc::new(Monitor::new()),
             persist_fw,
@@ -626,6 +707,13 @@ async fn monitor(State(app): State<App>, Json(body): Json<MonitorBody>) -> Respo
     }
 }
 
+async fn aj179_api(State(app): State<App>, Json(body): Json<Aj179Body>) -> Response {
+    match apply_aj179(&app, body) {
+        Ok(()) => Json(collect_state(&app)).into_response(),
+        Err(e) => err_json(&e),
+    }
+}
+
 fn err_json(msg: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -655,6 +743,7 @@ fn collect_state(app: &App) -> AppStateView {
     let hid = app.hid.lock().unwrap().clone();
     let muted = is_muted(&mixer, &hid);
     let peripherals = group_peripherals(&devices);
+    let aj179 = aj179_view(&app.aj179.lock().unwrap());
     AppStateView {
         lighting_ok: app.lighting_ok.load(Ordering::Relaxed),
         audio_ok: app.audio_ok.load(Ordering::Relaxed) || audio_listed,
@@ -679,9 +768,169 @@ fn collect_state(app: &App) -> AppStateView {
         },
         muted,
         peripherals,
+        aj179,
         version: update::current_version().into(),
         update: app.update.lock().unwrap().clone(),
     }
+}
+
+fn aj179_view(s: &Aj179Snap) -> Aj179View {
+    let info = s.info.as_ref();
+    Aj179View {
+        connected: s.connected,
+        link: s.link.clone(),
+        vid: format!("{:04x}", s.vid),
+        pid: format!("{:04x}", s.pid),
+        device_id: info.map(|i| i.device_id.clone()).unwrap_or_default(),
+        battery: info.map(|i| i.battery),
+        charging: info.map(|i| i.charging).unwrap_or(false),
+        awake: info.map(|i| i.connected).unwrap_or(false),
+        rate_hz: s.rate_hz,
+        dpi_index: s.dpi_index,
+        dpi: s
+            .dpi
+            .iter()
+            .map(|d| Aj179DpiView {
+                value: d.value,
+                color: d.color.to_hex(),
+            })
+            .collect(),
+        light_mode: s.lighting.as_ref().map(|l| l.mode),
+        light_brightness: s.lighting.as_ref().map(|l| l.brightness).unwrap_or(4),
+        light_speed: s.lighting.as_ref().map(|l| l.speed).unwrap_or(2),
+        light_color: s
+            .lighting
+            .as_ref()
+            .map(|l| l.color.to_hex())
+            .unwrap_or_else(|| "#ff0000".into()),
+        lod: s.sensor.as_ref().map(|x| x.lod),
+        motion_sync: s.sensor.as_ref().map(|x| x.motion_sync).unwrap_or(false),
+        angle_snap: s.sensor.as_ref().map(|x| x.angle_snap).unwrap_or(false),
+        sleep: s.power.as_ref().map(|x| x.sleep),
+        wake_on_move: s.power.as_ref().map(|x| x.wake_on_move).unwrap_or(false),
+        rx_fw: s.rx_fw.clone(),
+        error: s.error.clone(),
+        buttons: s
+            .buttons
+            .iter()
+            .enumerate()
+            .map(|(i, code)| Aj179ButtonView {
+                index: i as u8,
+                name: aj179::BUTTON_NAMES.get(i).copied().unwrap_or("?").into(),
+                action: aj179::button_action(*code),
+                locked: i == 0,
+            })
+            .collect(),
+    }
+}
+
+fn apply_aj179(app: &App, body: Aj179Body) -> Result<(), String> {
+    let mouse = Aj179::open().map_err(|e| e.to_string())?;
+    if let Some(hz) = body.rate {
+        mouse.set_rate(hz).map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = format!("AJ179 taxa {hz} Hz");
+    }
+    if let Some(mode) = body.light_mode.as_deref() {
+        let m = match mode {
+            "off" => aj179::LIGHT_OFF,
+            "breathing" => aj179::LIGHT_BREATHING,
+            "constant" => aj179::LIGHT_CONSTANT,
+            _ => return Err(format!("modo de luz desconhecido: {mode}")),
+        };
+        let color = body
+            .color
+            .as_deref()
+            .map(Rgb::parse_hex)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(Rgb::new(0xff, 0, 0));
+        mouse
+            .set_lighting(
+                m,
+                body.brightness.unwrap_or(4),
+                body.speed.unwrap_or(2),
+                color,
+            )
+            .map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = "AJ179 iluminação atualizada".into();
+    }
+    if body.lod.is_some() || body.motion_sync.is_some() || body.angle_snap.is_some() {
+        let cur = mouse.snapshot();
+        let lod = body
+            .lod
+            .or_else(|| cur.sensor.as_ref().map(|s| s.lod))
+            .unwrap_or(2);
+        let ms = body
+            .motion_sync
+            .or_else(|| cur.sensor.as_ref().map(|s| s.motion_sync))
+            .unwrap_or(false);
+        let ang = body
+            .angle_snap
+            .or_else(|| cur.sensor.as_ref().map(|s| s.angle_snap))
+            .unwrap_or(false);
+        mouse.set_sensor(lod, ms, ang).map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = "AJ179 sensor atualizado".into();
+    }
+    if body.dpi_index.is_some() || body.dpi_values.is_some() || body.dpi_colors.is_some() {
+        let cur = mouse.snapshot();
+        let sensor = cur
+            .info
+            .as_ref()
+            .map(|i| i.sensor_id)
+            .unwrap_or(aj179::SENSOR_PAW3395);
+        let mut stages: Vec<u16> = cur.dpi.iter().map(|d| d.value).collect();
+        if let Some(vals) = &body.dpi_values {
+            if vals.len() < 2 {
+                return Err("DPI precisa de pelo menos 2 estágios".into());
+            }
+            stages = vals.iter().map(|v| aj179::clamp_dpi(sensor, *v)).collect();
+        }
+        if stages.is_empty() {
+            return Err("DPI ainda não lido; mexa no mouse".into());
+        }
+        let idx = body.dpi_index.unwrap_or(cur.dpi_index.unwrap_or(0));
+        let idx = idx.min(stages.len().saturating_sub(1) as u8);
+        mouse
+            .set_dpi_stages(sensor, idx, &stages)
+            .map_err(|e| e.to_string())?;
+        if let Some(cols) = &body.dpi_colors {
+            let mut colors: Vec<Rgb> = cur.dpi.iter().map(|d| d.color).collect();
+            colors.resize(stages.len(), Rgb::OFF);
+            for (i, hex) in cols.iter().enumerate() {
+                if i < colors.len() {
+                    colors[i] = Rgb::parse_hex(hex).map_err(|e| e.to_string())?;
+                }
+            }
+            mouse.set_dpi_colors(&colors).map_err(|e| e.to_string())?;
+        }
+        *app.status.lock().unwrap() = format!("AJ179 DPI estágio {}", idx + 1);
+    }
+    if body.buttons_reset {
+        mouse
+            .set_buttons(&aj179::FACTORY_BUTTONS)
+            .map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = "AJ179 botões de fábrica".into();
+    } else if let (Some(idx), Some(action)) = (body.button_index, body.button_action.as_deref()) {
+        if idx == 0 {
+            return Err("o botão esquerdo não é remapeado (fica o clique)".into());
+        }
+        if idx as usize >= aj179::BUTTON_COUNT {
+            return Err("índice de botão inválido".into());
+        }
+        let cur = mouse.snapshot();
+        let mut keys = cur.buttons;
+        if keys.len() < aj179::BUTTON_COUNT {
+            keys = aj179::FACTORY_BUTTONS.to_vec();
+        }
+        keys[idx as usize] = aj179::encode_button(action).map_err(|e| e.to_string())?;
+        mouse.set_buttons(&keys).map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = format!(
+            "AJ179 botão {} → {action}",
+            aj179::BUTTON_NAMES[idx as usize]
+        );
+    }
+    *app.aj179.lock().unwrap() = mouse.snapshot();
+    Ok(())
 }
 
 fn apply_monitor(app: &App, body: MonitorBody) -> Result<(), String> {
@@ -721,9 +970,8 @@ fn apply_monitor(app: &App, body: MonitorBody) -> Result<(), String> {
 fn list_devices() -> (Vec<DeviceView>, bool) {
     let mut audio_listed = false;
     let devices = match HidApi::new() {
-        Ok(api) => enumerate(&api)
-            .into_iter()
-            .map(|d| {
+        Ok(api) => {
+            let duo = enumerate(&api).into_iter().map(|d| {
                 if d.pid == AUDIO_PID {
                     audio_listed = true;
                 }
@@ -746,8 +994,28 @@ fn list_devices() -> (Vec<DeviceView>, bool) {
                     path: d.path,
                     role: role.into(),
                 }
-            })
-            .collect(),
+            });
+            let mice = aj179::enumerate(&api).into_iter().map(|d| {
+                let role = if d.interface == aj179::CONFIG_INTERFACE {
+                    "AJ179 config HID"
+                } else {
+                    "AJ179"
+                };
+                DeviceView {
+                    vid: format!("{:04x}", d.vid),
+                    pid: format!("{:04x}", d.pid),
+                    interface: d.interface,
+                    product: if d.product.is_empty() {
+                        "AJAZZ AJ179".into()
+                    } else {
+                        d.product
+                    },
+                    path: d.path,
+                    role: role.into(),
+                }
+            });
+            duo.chain(mice).collect()
+        }
         Err(_) => Vec::new(),
     };
     (devices, audio_listed)
@@ -770,7 +1038,7 @@ fn group_peripherals(devices: &[DeviceView]) -> Vec<PeripheralView> {
     } else {
         "desconectado".into()
     };
-    vec![PeripheralView {
+    let duo = PeripheralView {
         id: "duocast".into(),
         brand: "HyperX".into(),
         name: "DuoCast".into(),
@@ -779,7 +1047,36 @@ fn group_peripherals(devices: &[DeviceView]) -> Vec<PeripheralView> {
         summary,
         details,
         pages: vec!["light".into(), "audio".into()],
-    }]
+    };
+    let aj_parts: Vec<&DeviceView> = devices
+        .iter()
+        .filter(|d| {
+            aj179::is_aj179_ids(
+                u16::from_str_radix(&d.vid, 16).unwrap_or(0),
+                u16::from_str_radix(&d.pid, 16).unwrap_or(0),
+            )
+        })
+        .collect();
+    let aj_on = !aj_parts.is_empty();
+    let aj_details = aj_parts
+        .iter()
+        .map(|d| format!("{}:{}  iface {}  {}", d.vid, d.pid, d.interface, d.role))
+        .collect();
+    let aj = PeripheralView {
+        id: "aj179".into(),
+        brand: "AJAZZ".into(),
+        name: "AJ179".into(),
+        kind: "mouse".into(),
+        connected: aj_on,
+        summary: if aj_on {
+            format!("{} interfaces USB", aj_parts.len())
+        } else {
+            "desconectado".into()
+        },
+        details: aj_details,
+        pages: vec!["light".into(), "mouse".into()],
+    };
+    vec![duo, aj]
 }
 
 fn apply_led(app: &App, body: LedBody) -> Result<(), String> {
@@ -1062,8 +1359,29 @@ fn spawn_led_worker(
 }
 
 fn udev_rules_installed() -> bool {
-    std::path::Path::new("/usr/lib/udev/rules.d/99-hyperx-duocast.rules").exists()
-        || std::path::Path::new("/etc/udev/rules.d/99-hyperx-duocast.rules").exists()
+    let duo = std::path::Path::new("/usr/lib/udev/rules.d/99-hyperx-duocast.rules").exists()
+        || std::path::Path::new("/etc/udev/rules.d/99-hyperx-duocast.rules").exists();
+    let mouse = std::path::Path::new("/usr/lib/udev/rules.d/99-ajazz-aj179.rules").exists()
+        || std::path::Path::new("/etc/udev/rules.d/99-ajazz-aj179.rules").exists();
+    duo || mouse
+}
+
+fn spawn_aj179_poller(slot: Arc<Mutex<Aj179Snap>>) {
+    thread::Builder::new()
+        .name("aj179-hid".into())
+        .spawn(move || loop {
+            match Aj179::open() {
+                Ok(m) => *slot.lock().unwrap() = m.snapshot(),
+                Err(e) => {
+                    *slot.lock().unwrap() = Aj179Snap {
+                        error: Some(e.to_string()),
+                        ..Aj179Snap::default()
+                    };
+                }
+            }
+            thread::sleep(Duration::from_millis(2000));
+        })
+        .ok();
 }
 
 fn spawn_update_checker(slot: Arc<Mutex<UpdateStatus>>) {

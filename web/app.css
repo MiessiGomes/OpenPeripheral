@@ -147,7 +147,32 @@ input[type="range"] { width: 100%; max-width: 420px; accent-color: var(--accent)
 input[type="color"] {
   width: 48px; height: 32px; border: 0; background: transparent; cursor: pointer;
 }
+select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+}
 .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.dpi-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.dpi-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 48px auto;
+  gap: 8px;
+  align-items: center;
+}
+.dpi-row input[type="number"] {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font: inherit;
+  width: 100%;
+}
+.dpi-row .pick { padding: 8px 10px; min-width: 0; }
 .fx {
   display: grid;
   grid-template-columns: 1fr 1fr;
