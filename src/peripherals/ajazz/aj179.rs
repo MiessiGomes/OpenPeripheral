@@ -50,6 +50,39 @@ pub const LIGHT_OFF: u8 = 0;
 pub const LIGHT_BREATHING: u8 = 2;
 pub const LIGHT_CONSTANT: u8 = 3;
 pub const SENSOR_PAW3395: u8 = 0x95;
+pub const FACTORY_DPI: [u16; 6] = [400, 800, 1200, 1600, 2400, 3200];
+pub const FACTORY_DPI_COLORS: [Rgb; 6] = [
+    Rgb {
+        r: 0xff,
+        g: 0,
+        b: 0,
+    },
+    Rgb {
+        r: 0,
+        g: 0xff,
+        b: 0,
+    },
+    Rgb {
+        r: 0,
+        g: 0,
+        b: 0xff,
+    },
+    Rgb {
+        r: 0,
+        g: 0xff,
+        b: 0xff,
+    },
+    Rgb {
+        r: 0xff,
+        g: 0xff,
+        b: 0,
+    },
+    Rgb {
+        r: 0xff,
+        g: 0,
+        b: 0xff,
+    },
+];
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Info {
@@ -484,9 +517,13 @@ impl Mouse {
     }
 
     pub fn transact(&self, report: &[u8; REPORT_LEN]) -> Result<[u8; REPORT_LEN]> {
+        self.transact_ms(report, 3200)
+    }
+
+    fn transact_ms(&self, report: &[u8; REPORT_LEN], timeout_ms: u64) -> Result<[u8; REPORT_LEN]> {
         let cmd = report[0];
         self.write_report(report)?;
-        let deadline = Instant::now() + Duration::from_millis(3200);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -516,6 +553,15 @@ impl Mouse {
 
     pub fn get(&self, cmd: u8) -> Result<[u8; REPORT_LEN]> {
         self.transact(&read_cmd(cmd))
+    }
+
+    fn get_opt(&self, cmd: u8) -> Option<[u8; REPORT_LEN]> {
+        for _ in 0..2 {
+            if let Ok(r) = self.transact_ms(&read_cmd(cmd), 900) {
+                return Some(r);
+            }
+        }
+        None
     }
 
     pub fn set(&self, cmd: u8, payload: &[u8]) -> Result<[u8; REPORT_LEN]> {
@@ -553,18 +599,18 @@ impl Mouse {
             snap.error = Some("mouse a dormir — mexa para sincronizar DPI/LED".into());
             return snap;
         }
-        if let Ok(r) = self.get(CMD_GET_RATE) {
+        if let Some(r) = self.get_opt(CMD_GET_RATE) {
             snap.rate_hz = flag_to_rate(r[4]);
         }
         let mut values = Vec::new();
-        if let Ok(r) = self.get(CMD_GET_DPI) {
+        if let Some(r) = self.get_opt(CMD_GET_DPI) {
             if let Some((idx, v)) = parse_dpi(&r, sensor) {
                 snap.dpi_index = Some(idx);
                 values = v;
             }
         }
         let colors = self
-            .get(CMD_GET_DPI_COLOR)
+            .get_opt(CMD_GET_DPI_COLOR)
             .map(|r| parse_dpi_colors(&r, values.len().max(6)))
             .unwrap_or_default();
         snap.dpi = values
@@ -575,20 +621,20 @@ impl Mouse {
                 color: colors.get(i).copied().unwrap_or(Rgb::OFF),
             })
             .collect();
-        if let Ok(r) = self.get(CMD_GET_LIGHT) {
+        if let Some(r) = self.get_opt(CMD_GET_LIGHT) {
             snap.lighting = parse_lighting(&r);
         }
-        if let Ok(r) = self.get(CMD_GET_SENSOR) {
+        if let Some(r) = self.get_opt(CMD_GET_SENSOR) {
             snap.sensor = parse_sensor(&r);
         }
-        if let Ok(r) = self.get(CMD_GET_POWER) {
+        if let Some(r) = self.get_opt(CMD_GET_POWER) {
             snap.power = parse_power(&r);
         }
-        if let Ok(r) = self.get(CMD_GET_KEYS) {
+        if let Some(r) = self.get_opt(CMD_GET_KEYS) {
             snap.buttons = parse_buttons(&r);
         }
         if DONGLE_PIDS.contains(&self.pid) {
-            if let Ok(r) = self.get(CMD_RX_FW) {
+            if let Some(r) = self.get_opt(CMD_RX_FW) {
                 snap.rx_fw = Some(format!("{:x}.{:02x}", r[4], r[5]));
             }
         }
@@ -627,6 +673,68 @@ impl Mouse {
         let payload = lighting_payload(mode, brightness, speed, color);
         self.set(CMD_SET_LIGHT, &payload)?;
         self.set(CMD_SET_LIGHT, &payload)?;
+        Ok(())
+    }
+
+    /// Apaga ou restaura o LED em **todos** os estágios DPI. Valores e cores
+    /// ficam em `~/.config/openperipheral/aj179-led.json`.
+    pub fn set_led_enabled(&self, on: bool) -> Result<()> {
+        use super::persist;
+        let snap = self.snapshot();
+        let sensor = snap
+            .info
+            .as_ref()
+            .map(|i| i.sensor_id)
+            .unwrap_or(SENSOR_PAW3395);
+        let mut prefs = persist::load();
+        persist::remember_values(
+            &mut prefs,
+            &snap.dpi.iter().map(|d| d.value).collect::<Vec<_>>(),
+        );
+        persist::remember_colors(
+            &mut prefs,
+            &snap.dpi.iter().map(|d| d.color).collect::<Vec<_>>(),
+        );
+        let mut values = if prefs.dpi_values.len() >= 2 {
+            prefs.dpi_values.clone()
+        } else if snap.dpi.len() >= 2 {
+            snap.dpi.iter().map(|d| d.value).collect()
+        } else {
+            FACTORY_DPI.to_vec()
+        };
+        let n = values.len().max(6);
+        values.resize(n, 400);
+        let mut colors = persist::parse_colors(&prefs.dpi_colors);
+        if !persist::any_lit(&colors) {
+            colors = FACTORY_DPI_COLORS.to_vec();
+        }
+        colors.resize(n, Rgb::OFF);
+        if on {
+            let idx = snap.dpi_index.unwrap_or(0).min(n.saturating_sub(1) as u8);
+            if snap.dpi.len() < 2 {
+                std::thread::sleep(Duration::from_millis(60));
+                self.set_dpi_stages(sensor, idx, &values)?;
+            }
+            std::thread::sleep(Duration::from_millis(80));
+            self.set_dpi_colors(&colors)?;
+            let glow = colors
+                .get(idx as usize)
+                .copied()
+                .unwrap_or(Rgb::new(0xff, 0, 0));
+            std::thread::sleep(Duration::from_millis(60));
+            self.set_lighting(LIGHT_CONSTANT, 4, 2, glow)?;
+            prefs.led_on = true;
+            persist::remember_colors(&mut prefs, &colors);
+            persist::remember_values(&mut prefs, &values);
+            persist::save(&prefs);
+        } else {
+            std::thread::sleep(Duration::from_millis(60));
+            self.set_lighting(LIGHT_OFF, 0, 0, Rgb::OFF)?;
+            std::thread::sleep(Duration::from_millis(60));
+            self.set_dpi_colors(&vec![Rgb::OFF; n])?;
+            prefs.led_on = false;
+            persist::save(&prefs);
+        }
         Ok(())
     }
 

@@ -45,7 +45,7 @@ PRs que adicionem um destes (ou outro) são bem-vindos. Prefira evidência do ar
 
 ```bash
 cd /caminho/para/OpenPeripheral
-sudo apt install ./target/debian/openperipheral_0.2.0-1_amd64.deb
+sudo apt install ./target/debian/openperipheral_0.2.1-1_amd64.deb
 ```
 
 A partir de uma release, o ficheiro pode estar noutro sítio; use o caminho real, sem o glob `*.deb` se o `apt` não expandir o `*`.
@@ -94,8 +94,8 @@ Dependências de sistema: `pkg-config`, `libusb-1.0`, `libudev`, `libgtk-3`, `li
 cargo install cargo-deb
 ./packaging/build-deb.sh
 # imprime o caminho, por exemplo:
-#   target/debian/openperipheral_0.2.0-1_amd64.deb
-sudo apt install ./target/debian/openperipheral_0.2.0-1_amd64.deb
+#   target/debian/openperipheral_0.2.1-1_amd64.deb
+sudo apt install ./target/debian/openperipheral_0.2.1-1_amd64.deb
 ```
 
 O pacote instala:

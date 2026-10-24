@@ -79,6 +79,8 @@
             <h2>AJ179</h2>
             <p class="hint" id="aj-sum">Bateria, taxa e DPI no firmware do mouse.</p>
             <p class="mono" id="aj-bat">—</p>
+            <label class="check"><input type="checkbox" id="aj-led-on" checked /> LED (todos os DPI)</label>
+            <p class="hint">Desligar apaga o logo em qualquer estágio. Os valores e as cores de DPI ficam gravados.</p>
             <label class="field">Taxa
               <select id="aj-rate">
                 <option value="125">125 Hz</option>
@@ -131,9 +133,10 @@
           </article>
           <article class="card hidden" id="aj-light-card">
             <h2>LED do AJ179</h2>
-            <p class="hint">Modos que o driver oficial habilita: constante, respiração, desligado. Grava no mouse.</p>
+            <p class="hint">O interruptor apaga o logo em qualquer DPI. Constante e respiração voltam a ligá-lo.</p>
             <p class="hint" id="aj-light-sum"></p>
             <div class="stack">
+              <label class="check"><input type="checkbox" id="aj-led-on-light" checked /> LED (todos os DPI)</label>
               <label>Cor <input type="color" id="aj-color" value="#ff0000" /></label>
               <label class="field">Brilho <input type="range" id="aj-bri" min="1" max="4" value="4" /></label>
               <label class="field">Velocidade <input type="range" id="aj-spd" min="0" max="4" value="2" /></label>

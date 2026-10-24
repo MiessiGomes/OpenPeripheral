@@ -261,6 +261,11 @@ function paintAj179(m) {
     if (m.lod) $("aj-lod").value = String(m.lod);
     $("aj-ms").checked = !!m.motion_sync;
     $("aj-as").checked = !!m.angle_snap;
+    const led = m.led_on !== false;
+    const ledA = $("aj-led-on");
+    const ledB = $("aj-led-on-light");
+    if (ledA) ledA.checked = led;
+    if (ledB) ledB.checked = led;
     if (m.light_color && m.light_color !== "#000000") $("aj-color").value = m.light_color;
     $("aj-bri").value = m.light_brightness > 0 ? m.light_brightness : 4;
     $("aj-spd").value = m.light_speed;
@@ -270,7 +275,7 @@ function paintAj179(m) {
   if (lightEl) {
     const name = lightNames[m.light_mode] || (m.light_mode == null ? "—" : "modo " + m.light_mode);
     lightEl.textContent = m.connected
-      ? `Atual: ${name} · ${m.light_color || "#000000"} · brilho ${m.light_brightness ?? "—"}`
+      ? `LED ${m.led_on === false ? "off" : "on"} · ${name} · ${m.light_color || "#000000"} · brilho ${m.light_brightness ?? "—"}`
       : "";
   }
   paintDpiRows(m);
@@ -301,6 +306,7 @@ const AJ_BTN_OPTS = [
 function paintDpiRows(m) {
   const box = $("aj-dpi-stages");
   const stages = m.dpi || [];
+  if (!stages.length) return;
   if (box.childElementCount !== stages.length) {
     box.innerHTML = "";
     stages.forEach((d, i) => {
@@ -312,7 +318,7 @@ function paintDpiRows(m) {
       const col = $(`aj-dpi-col-${i}`);
       val.onchange = () => commitDpi();
       col.onchange = () => commitDpi();
-      row.querySelector(".pick").onclick = () => sendAj179({ dpi_index: i });
+      row.querySelector(".pick").onclick = () => useDpiStage(i);
     });
   }
   stages.forEach((d, i) => {
@@ -325,7 +331,7 @@ function paintDpiRows(m) {
   });
 }
 
-function commitDpi() {
+function dpiFromForm() {
   const box = $("aj-dpi-stages");
   const n = box.querySelectorAll(".dpi-row").length;
   const dpi_values = [];
@@ -334,12 +340,28 @@ function commitDpi() {
     dpi_values.push(Number($(`aj-dpi-val-${i}`).value));
     dpi_colors.push($(`aj-dpi-col-${i}`).value);
   }
+  return { dpi_values, dpi_colors };
+}
+
+function useDpiStage(i) {
+  const { dpi_values } = dpiFromForm();
+  if (dpi_values.length < 2 || dpi_values.some((v) => !Number.isFinite(v) || v < 50)) return;
+  document.querySelectorAll("#aj-dpi-stages .pick").forEach((b) => {
+    b.classList.toggle("accent", Number(b.dataset.i) === i);
+  });
+  sendAj179({ dpi_index: i, dpi_values });
+}
+
+function commitDpi() {
+  const { dpi_values, dpi_colors } = dpiFromForm();
+  if (dpi_values.length < 2 || dpi_values.some((v) => !Number.isFinite(v) || v < 50)) return;
   sendAj179({ dpi_values, dpi_colors });
 }
 
 function paintButtons(m) {
   const host = $("aj-buttons");
   const list = m.buttons || [];
+  if (!list.length) return;
   if (host.childElementCount !== list.length) {
     host.innerHTML = "";
     list.forEach((b) => {
@@ -495,6 +517,16 @@ $("aj-rate").onchange = () => sendAj179({ rate: Number($("aj-rate").value) });
 $("aj-lod").onchange = () => sendAj179({ lod: Number($("aj-lod").value) });
 $("aj-ms").onchange = () => sendAj179({ motion_sync: $("aj-ms").checked });
 $("aj-as").onchange = () => sendAj179({ angle_snap: $("aj-as").checked });
+function onAjLedToggle(el) {
+  const on = el.checked;
+  const a = $("aj-led-on");
+  const b = $("aj-led-on-light");
+  if (a) a.checked = on;
+  if (b) b.checked = on;
+  sendAj179({ led_on: on });
+}
+$("aj-led-on").onchange = () => onAjLedToggle($("aj-led-on"));
+$("aj-led-on-light").onchange = () => onAjLedToggle($("aj-led-on-light"));
 function ajLightBody(mode) {
   return {
     light_mode: mode,
@@ -505,7 +537,7 @@ function ajLightBody(mode) {
 }
 $("aj-const").onclick = () => sendAj179(ajLightBody("constant"));
 $("aj-breath").onclick = () => sendAj179(ajLightBody("breathing"));
-$("aj-led-off").onclick = () => sendAj179({ light_mode: "off", brightness: 0, speed: 0 });
+$("aj-led-off").onclick = () => sendAj179({ led_on: false });
 $("aj-btn-reset").onclick = () => sendAj179({ buttons_reset: true });
 
 async function sendMonitor(body) {

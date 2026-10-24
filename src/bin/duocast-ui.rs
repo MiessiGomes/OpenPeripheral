@@ -4,6 +4,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use duocast::peripherals::ajazz::aj179::{self, Mouse as Aj179, Snapshot as Aj179Snap};
+use duocast::peripherals::ajazz::persist as aj179_led;
 use duocast::peripherals::hyperx_duocast::device::{enumerate, AudioHid, Lighting};
 use duocast::peripherals::hyperx_duocast::effects::{frame, Effect};
 use duocast::peripherals::hyperx_duocast::ids::{AUDIO_PID, CONTROLLER_PID};
@@ -146,6 +147,7 @@ struct Aj179View {
     rx_fw: Option<String>,
     error: Option<String>,
     buttons: Vec<Aj179ButtonView>,
+    led_on: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -249,6 +251,8 @@ struct Aj179Body {
     button_action: Option<String>,
     #[serde(default)]
     buttons_reset: bool,
+    #[serde(default)]
+    led_on: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -375,8 +379,7 @@ fn open_native_window(url: &str) {
         thread::spawn(watch_minimize_to_tray);
         thread::spawn(move || {
             let _ = child.wait();
-            app_log("janela fechada (X); a matar Chrome e o servidor");
-            kill_everything(pid);
+            watch_chrome_window(pid);
         });
         glib::timeout_add_local(Duration::from_millis(200), move || {
             while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
@@ -403,8 +406,48 @@ fn open_native_window(url: &str) {
     open_gtk_webview(&page);
 }
 
-fn spawn_chrome(page: &str) -> Option<Child> {
-    const BINS: &[&str] = &[
+fn chrome_profile_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    Path::new(&home).join(".config/openperipheral/chrome-profile")
+}
+
+fn clear_stale_chrome_singleton(profile: &Path) {
+    let lock = profile.join("SingletonLock");
+    let Ok(target) = std::fs::read_link(&lock) else {
+        return;
+    };
+    let name = target.to_string_lossy();
+    let Some(pid_str) = name.rsplit('-').next() else {
+        return;
+    };
+    let Ok(pid) = pid_str.parse::<i32>() else {
+        return;
+    };
+    let alive = unsafe { libc::kill(pid, 0) == 0 };
+    if alive {
+        return;
+    }
+    app_log("A limpar lock stale do Chrome (perfil OpenPeripheral).");
+    let _ = std::fs::remove_file(&lock);
+    let _ = std::fs::remove_file(profile.join("SingletonSocket"));
+    let _ = std::fs::remove_file(profile.join("SingletonCookie"));
+}
+
+fn chrome_bin() -> Option<String> {
+    const DIRECT: &[&str] = &[
+        "/opt/google/chrome/chrome",
+        "/opt/google/chrome/google-chrome",
+        "/usr/lib/chromium-browser/chromium-browser",
+        "/usr/lib/chromium/chromium",
+        "/opt/brave.com/brave/brave",
+        "/opt/microsoft/msedge/msedge",
+    ];
+    for p in DIRECT {
+        if Path::new(p).is_file() {
+            return Some((*p).into());
+        }
+    }
+    const WRAPPERS: &[&str] = &[
         "google-chrome-stable",
         "google-chrome",
         "brave-browser",
@@ -413,23 +456,30 @@ fn spawn_chrome(page: &str) -> Option<Child> {
         "microsoft-edge-stable",
         "microsoft-edge",
     ];
-    let bin = BINS.iter().copied().find(|b| {
-        Path::new(&format!("/usr/bin/{b}")).exists()
-            || Path::new(&format!("/usr/local/bin/{b}")).exists()
-    })?;
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let profile = Path::new(&home).join(".config/openperipheral/chrome-profile");
+    WRAPPERS.iter().copied().find_map(|b| {
+        let p = format!("/usr/bin/{b}");
+        Path::new(&p).exists().then_some(p)
+    })
+}
+
+fn spawn_chrome(page: &str) -> Option<Child> {
+    let bin = chrome_bin()?;
+    let profile = chrome_profile_dir();
     let _ = std::fs::create_dir_all(&profile);
+    clear_stale_chrome_singleton(&profile);
     app_log(&format!("Janela nativa via {bin} --app"));
-    match Command::new(bin)
-        .arg(format!("--app={page}"))
+    match Command::new(&bin)
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
+        .arg("--disable-sync")
         .arg("--disable-features=TranslateUI")
         .arg("--disable-background-mode")
+        .arg("--password-store=basic")
         .arg("--class=OpenPeripheral")
         .arg("--window-size=1280,840")
+        .arg("--new-window")
+        .arg(format!("--app={page}"))
         .process_group(0)
         .spawn()
     {
@@ -438,6 +488,24 @@ fn spawn_chrome(page: &str) -> Option<Child> {
             app_log(&format!("falha a lançar {bin}: {e}"));
             None
         }
+    }
+}
+
+fn watch_chrome_window(chrome_pid: u32) {
+    let start = Instant::now();
+    let mut seen = false;
+    loop {
+        let open = !app_window_ids().is_empty();
+        if open {
+            seen = true;
+        } else if seen {
+            app_log("janela fechada (X); a matar Chrome e o servidor");
+            kill_everything(chrome_pid);
+        } else if start.elapsed() > Duration::from_secs(12) {
+            app_log("Chrome não abriu janela OpenPeripheral; o painel continua em http://127.0.0.1:7840");
+            return;
+        }
+        thread::sleep(Duration::from_millis(350));
     }
 }
 
@@ -776,6 +844,8 @@ fn collect_state(app: &App) -> AppStateView {
 
 fn aj179_view(s: &Aj179Snap) -> Aj179View {
     let info = s.info.as_ref();
+    let prefs = aj179_led::load();
+    let saved = aj179_led::parse_colors(&prefs.dpi_colors);
     Aj179View {
         connected: s.connected,
         link: s.link.clone(),
@@ -786,15 +856,45 @@ fn aj179_view(s: &Aj179Snap) -> Aj179View {
         charging: info.map(|i| i.charging).unwrap_or(false),
         awake: info.map(|i| i.connected).unwrap_or(false),
         rate_hz: s.rate_hz,
-        dpi_index: s.dpi_index,
-        dpi: s
-            .dpi
-            .iter()
-            .map(|d| Aj179DpiView {
-                value: d.value,
-                color: d.color.to_hex(),
-            })
-            .collect(),
+        dpi_index: s.dpi_index.or(prefs.dpi_index),
+        dpi: {
+            let rows: Vec<(u16, Rgb)> = if s.dpi.is_empty() {
+                let vals = if prefs.dpi_values.len() >= 2 {
+                    prefs.dpi_values.clone()
+                } else {
+                    aj179::FACTORY_DPI.to_vec()
+                };
+                let cols = if aj179_led::any_lit(&saved) {
+                    saved.clone()
+                } else {
+                    aj179::FACTORY_DPI_COLORS.to_vec()
+                };
+                vals.into_iter()
+                    .enumerate()
+                    .map(|(i, v)| (v, cols.get(i).copied().unwrap_or(Rgb::OFF)))
+                    .collect()
+            } else {
+                s.dpi
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| {
+                        let color = if !prefs.led_on || d.color == Rgb::OFF {
+                            saved.get(i).copied().unwrap_or(d.color)
+                        } else {
+                            d.color
+                        };
+                        (d.value, color)
+                    })
+                    .collect()
+            };
+            rows.into_iter()
+                .map(|(value, color)| Aj179DpiView {
+                    value,
+                    color: color.to_hex(),
+                })
+                .collect()
+        },
+        led_on: prefs.led_on,
         light_mode: s.lighting.as_ref().map(|l| l.mode),
         light_brightness: s.lighting.as_ref().map(|l| l.brightness).unwrap_or(4),
         light_speed: s.lighting.as_ref().map(|l| l.speed).unwrap_or(2),
@@ -810,17 +910,22 @@ fn aj179_view(s: &Aj179Snap) -> Aj179View {
         wake_on_move: s.power.as_ref().map(|x| x.wake_on_move).unwrap_or(false),
         rx_fw: s.rx_fw.clone(),
         error: s.error.clone(),
-        buttons: s
-            .buttons
-            .iter()
-            .enumerate()
-            .map(|(i, code)| Aj179ButtonView {
-                index: i as u8,
-                name: aj179::BUTTON_NAMES.get(i).copied().unwrap_or("?").into(),
-                action: aj179::button_action(*code),
-                locked: i == 0,
-            })
-            .collect(),
+        buttons: {
+            let keys = if s.buttons.len() >= aj179::BUTTON_COUNT {
+                s.buttons.clone()
+            } else {
+                aj179::FACTORY_BUTTONS.to_vec()
+            };
+            keys.iter()
+                .enumerate()
+                .map(|(i, code)| Aj179ButtonView {
+                    index: i as u8,
+                    name: aj179::BUTTON_NAMES.get(i).copied().unwrap_or("?").into(),
+                    action: aj179::button_action(*code),
+                    locked: i == 0,
+                })
+                .collect()
+        },
     }
 }
 
@@ -830,29 +935,41 @@ fn apply_aj179(app: &App, body: Aj179Body) -> Result<(), String> {
         mouse.set_rate(hz).map_err(|e| e.to_string())?;
         *app.status.lock().unwrap() = format!("AJ179 taxa {hz} Hz");
     }
+    let light_off = matches!(body.light_mode.as_deref(), Some("off")) || body.led_on == Some(false);
+    if light_off {
+        mouse.set_led_enabled(false).map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = "AJ179 LED desligado em todos os DPI".into();
+    } else if body.led_on == Some(true) {
+        mouse.set_led_enabled(true).map_err(|e| e.to_string())?;
+        *app.status.lock().unwrap() = "AJ179 LED ligado".into();
+    }
     if let Some(mode) = body.light_mode.as_deref() {
-        let m = match mode {
-            "off" => aj179::LIGHT_OFF,
-            "breathing" => aj179::LIGHT_BREATHING,
-            "constant" => aj179::LIGHT_CONSTANT,
-            _ => return Err(format!("modo de luz desconhecido: {mode}")),
-        };
-        let color = body
-            .color
-            .as_deref()
-            .map(Rgb::parse_hex)
-            .transpose()
-            .map_err(|e| e.to_string())?
-            .unwrap_or(Rgb::new(0xff, 0, 0));
-        mouse
-            .set_lighting(
-                m,
-                body.brightness.unwrap_or(4),
-                body.speed.unwrap_or(2),
-                color,
-            )
-            .map_err(|e| e.to_string())?;
-        *app.status.lock().unwrap() = "AJ179 iluminação atualizada".into();
+        if mode != "off" {
+            let m = match mode {
+                "breathing" => aj179::LIGHT_BREATHING,
+                "constant" => aj179::LIGHT_CONSTANT,
+                _ => return Err(format!("modo de luz desconhecido: {mode}")),
+            };
+            if !aj179_led::load().led_on {
+                mouse.set_led_enabled(true).map_err(|e| e.to_string())?;
+            }
+            let color = body
+                .color
+                .as_deref()
+                .map(Rgb::parse_hex)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or(Rgb::new(0xff, 0, 0));
+            mouse
+                .set_lighting(
+                    m,
+                    body.brightness.unwrap_or(4),
+                    body.speed.unwrap_or(2),
+                    color,
+                )
+                .map_err(|e| e.to_string())?;
+            *app.status.lock().unwrap() = "AJ179 iluminação atualizada".into();
+        }
     }
     if body.lod.is_some() || body.motion_sync.is_some() || body.angle_snap.is_some() {
         let cur = mouse.snapshot();
@@ -872,37 +989,51 @@ fn apply_aj179(app: &App, body: Aj179Body) -> Result<(), String> {
         *app.status.lock().unwrap() = "AJ179 sensor atualizado".into();
     }
     if body.dpi_index.is_some() || body.dpi_values.is_some() || body.dpi_colors.is_some() {
-        let cur = mouse.snapshot();
-        let sensor = cur
-            .info
-            .as_ref()
+        let mut prefs = aj179_led::load();
+        let sensor = mouse
+            .get(aj179::CMD_INFO)
+            .ok()
+            .and_then(|r| aj179::parse_info(&r))
             .map(|i| i.sensor_id)
             .unwrap_or(aj179::SENSOR_PAW3395);
-        let mut stages: Vec<u16> = cur.dpi.iter().map(|d| d.value).collect();
-        if let Some(vals) = &body.dpi_values {
-            if vals.len() < 2 {
-                return Err("DPI precisa de pelo menos 2 estágios".into());
-            }
-            stages = vals.iter().map(|v| aj179::clamp_dpi(sensor, *v)).collect();
+        let stages: Vec<u16> = if let Some(vals) = &body.dpi_values {
+            vals.iter().map(|v| aj179::clamp_dpi(sensor, *v)).collect()
+        } else if prefs.dpi_values.len() >= 2 {
+            prefs
+                .dpi_values
+                .iter()
+                .map(|v| aj179::clamp_dpi(sensor, *v))
+                .collect()
+        } else {
+            aj179::FACTORY_DPI.to_vec()
+        };
+        if stages.len() < 2 {
+            return Err("DPI precisa de pelo menos 2 estágios".into());
         }
-        if stages.is_empty() {
-            return Err("DPI ainda não lido; mexa no mouse".into());
-        }
-        let idx = body.dpi_index.unwrap_or(cur.dpi_index.unwrap_or(0));
-        let idx = idx.min(stages.len().saturating_sub(1) as u8);
+        let idx = body
+            .dpi_index
+            .or(prefs.dpi_index)
+            .unwrap_or(0)
+            .min(stages.len().saturating_sub(1) as u8);
         mouse
             .set_dpi_stages(sensor, idx, &stages)
             .map_err(|e| e.to_string())?;
+        prefs.dpi_index = Some(idx);
+        aj179_led::remember_values(&mut prefs, &stages);
         if let Some(cols) = &body.dpi_colors {
-            let mut colors: Vec<Rgb> = cur.dpi.iter().map(|d| d.color).collect();
+            let mut colors = aj179_led::parse_colors(&prefs.dpi_colors);
             colors.resize(stages.len(), Rgb::OFF);
             for (i, hex) in cols.iter().enumerate() {
                 if i < colors.len() {
                     colors[i] = Rgb::parse_hex(hex).map_err(|e| e.to_string())?;
                 }
             }
-            mouse.set_dpi_colors(&colors).map_err(|e| e.to_string())?;
+            aj179_led::remember_colors(&mut prefs, &colors);
+            if prefs.led_on {
+                mouse.set_dpi_colors(&colors).map_err(|e| e.to_string())?;
+            }
         }
+        aj179_led::save(&prefs);
         *app.status.lock().unwrap() = format!("AJ179 DPI estágio {}", idx + 1);
     }
     if body.buttons_reset {
@@ -929,7 +1060,19 @@ fn apply_aj179(app: &App, body: Aj179Body) -> Result<(), String> {
             aj179::BUTTON_NAMES[idx as usize]
         );
     }
-    *app.aj179.lock().unwrap() = mouse.snapshot();
+    let dpi_only =
+        (body.dpi_index.is_some() || body.dpi_values.is_some() || body.dpi_colors.is_some())
+            && body.rate.is_none()
+            && body.led_on.is_none()
+            && body.light_mode.is_none()
+            && body.lod.is_none()
+            && body.motion_sync.is_none()
+            && body.angle_snap.is_none()
+            && body.button_index.is_none()
+            && !body.buttons_reset;
+    if !dpi_only {
+        *app.aj179.lock().unwrap() = mouse.snapshot();
+    }
     Ok(())
 }
 

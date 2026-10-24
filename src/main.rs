@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use duocast::peripherals::ajazz::aj179::{self, Mouse as Aj179};
+use duocast::peripherals::ajazz::persist as aj179_led;
 use duocast::peripherals::hyperx_duocast::device::{enumerate, AudioHid, Lighting};
 use duocast::peripherals::hyperx_duocast::effects::{frame, Effect};
 use duocast::peripherals::hyperx_duocast::mixer;
@@ -206,6 +207,10 @@ enum Aj179Cmd {
         action: Option<String>,
     },
     ButtonsReset,
+    /// Liga ou apaga o LED em todos os estágios DPI (as cores ficam gravadas à parte)
+    Led {
+        state: OnOff,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -447,7 +452,28 @@ fn main() -> Result<()> {
                                 })
                                 .collect();
                             println!("dpi {}", stages.join(" | "));
+                        } else {
+                            let prefs = aj179_led::load();
+                            if prefs.dpi_values.len() >= 2 {
+                                println!(
+                                    "dpi (guardado) {}",
+                                    prefs
+                                        .dpi_values
+                                        .iter()
+                                        .zip(
+                                            prefs
+                                                .dpi_colors
+                                                .iter()
+                                                .chain(std::iter::repeat(&"#000000".to_string()))
+                                        )
+                                        .map(|(v, c)| format!("{v} {c}"))
+                                        .collect::<Vec<_>>()
+                                        .join(" | ")
+                                );
+                            }
                         }
+                        let prefs = aj179_led::load();
+                        println!("led {}", if prefs.led_on { "on" } else { "off" });
                         if let Some(l) = &s.lighting {
                             println!(
                                 "luz modo {} brilho {} velocidade {} {}",
@@ -500,12 +526,27 @@ fn main() -> Result<()> {
                             .map(parse_rgb)
                             .transpose()?
                             .unwrap_or(Rgb::new(0xff, 0, 0));
-                        let mode = match m {
-                            Aj179Light::Off => aj179::LIGHT_OFF,
-                            Aj179Light::Breathing => aj179::LIGHT_BREATHING,
-                            Aj179Light::Constant => aj179::LIGHT_CONSTANT,
-                        };
-                        mouse.set_lighting(mode, brightness, speed, rgb)?;
+                        match m {
+                            Aj179Light::Off => mouse.set_led_enabled(false)?,
+                            Aj179Light::Breathing => {
+                                mouse.set_led_enabled(true)?;
+                                mouse.set_lighting(
+                                    aj179::LIGHT_BREATHING,
+                                    brightness,
+                                    speed,
+                                    rgb,
+                                )?;
+                            }
+                            Aj179Light::Constant => {
+                                mouse.set_led_enabled(true)?;
+                                mouse.set_lighting(
+                                    aj179::LIGHT_CONSTANT,
+                                    brightness,
+                                    speed,
+                                    rgb,
+                                )?;
+                            }
+                        }
                         println!("ok");
                     }
                     None => {
@@ -603,6 +644,17 @@ fn main() -> Result<()> {
                 Aj179Cmd::ButtonsReset => {
                     mouse.set_buttons(&aj179::FACTORY_BUTTONS)?;
                     println!("fábrica");
+                }
+                Aj179Cmd::Led { state } => {
+                    mouse.set_led_enabled(matches!(state, OnOff::On))?;
+                    println!(
+                        "{}",
+                        if matches!(state, OnOff::On) {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
                 }
             }
         }
